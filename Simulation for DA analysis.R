@@ -281,196 +281,6 @@ gamma_norm_mix <- function(y, X){
 }
 
 
-ancom.W = function(otu_data,var_data,
-                   adjusted,repeated,
-                   main.var,adj.formula,
-                   repeat.var,long,rand.formula,
-                   multcorr,sig){
-  
-  n_otu=dim(otu_data)[2]-1
-  
-  otu_ids=colnames(otu_data)[-1]
-  
-  if(repeated==F){
-    data_comp=data.frame(merge(otu_data,var_data,by="Sample.ID",all.y=T),row.names=NULL)
-    lapply(colnames(data_comp), FUN = function(x){
-      
-    })
-    #data_comp=data.frame(merge(otu_data,var_data[,c("Sample.ID",main.var)],by="Sample.ID",all.y=T),row.names=NULL)
-  }else if(repeated==T){
-    data_comp=data.frame(merge(otu_data,var_data,by="Sample.ID"),row.names=NULL)
-    # data_comp=data.frame(merge(otu_data,var_data[,c("Sample.ID",main.var,repeat.var)],by="Sample.ID"),row.names=NULL)
-  }
-  
-  base.formula = paste0("lr ~ ",main.var)
-  if(repeated==T){
-    repeat.formula = paste0(base.formula," | ", repeat.var)
-  }
-  if(adjusted==T){
-    adjusted.formula = paste0(base.formula," + ", adj.formula)
-  }
-  
-  if( adjusted == F & repeated == F ){
-    fformula  <- formula(base.formula)
-  } else if( adjusted == F & repeated == T & long == T ){
-    fformula  <- formula(base.formula)   
-  }else if( adjusted == F & repeated == T & long == F ){
-    fformula  <- formula(repeat.formula)   
-  }else if( adjusted == T & repeated == F  ){
-    fformula  <- formula(adjusted.formula) 
-  }else if( adjusted == T & repeated == T  ){
-    fformula  <- formula(adjusted.formula)   
-  }else{
-    stop("Problem with data. Dataset should contain OTU abundances, groups, 
-         and optionally an ID for repeated measures.")
-  }
-  
-  
-  
-  if( repeated==FALSE & adjusted == FALSE){
-    if( length(unique(data_comp[,which(colnames(data_comp)==main.var)]))==2 ){
-      tfun <- exactRankTests::wilcox.exact
-    } else{
-      tfun <- stats::kruskal.test
-    }
-  }else if( repeated==FALSE & adjusted == TRUE){
-    tfun <- stats::aov
-  }else if( repeated== TRUE & adjusted == FALSE & long == FALSE){
-    tfun <- stats::friedman.test
-  }else if( repeated== TRUE & adjusted == FALSE & long == TRUE){
-    tfun <- nlme::lme
-  }else if( repeated== TRUE & adjusted == TRUE){
-    tfun <- nlme::lme
-  }
-  
-  logratio.mat <- matrix(NA, nrow=n_otu, ncol=n_otu)
-  for(ii in 1:(n_otu-1)){
-    for(jj in (ii+1):n_otu){
-      data.pair <- data_comp[,which(colnames(data_comp)%in%otu_ids[c(ii,jj)])]
-      lr <- log((1+as.numeric(data.pair[,1]))/(1+as.numeric(data.pair[,2])))
-      
-      lr_dat <- data.frame( lr=lr, data_comp,row.names=NULL )
-      
-      if(adjusted==FALSE&repeated==FALSE){  ## Wilcox, Kruskal Wallis
-        logratio.mat[ii,jj] <- tfun( formula=fformula, data = lr_dat)$p.value
-      }else if(adjusted==FALSE&repeated==TRUE&long==FALSE){ ## Friedman's 
-        logratio.mat[ii,jj] <- tfun( formula=fformula, data = lr_dat)$p.value
-      }else if(adjusted==TRUE&repeated==FALSE){ ## ANOVA
-        model=tfun(formula=fformula, data = lr_dat,na.action=na.omit)   
-        picker=which(gsub(" ","",row.names(summary(model)[[1]]))==main.var)  
-        logratio.mat[ii,jj] <- summary(model)[[1]][["Pr(>F)"]][picker]
-      }else if(repeated==TRUE&long==TRUE){ ## GEE
-        model=tfun(fixed=fformula,data = lr_dat,
-                   random = formula(rand.formula),
-                   correlation=corAR1(),
-                   na.action=na.omit)   
-        picker=which(gsub(" ","",row.names(anova(model)))==main.var)
-        logratio.mat[ii,jj] <- anova(model)[["p-value"]][picker]
-      }
-      
-    }
-  } 
-  
-  ind <- lower.tri(logratio.mat)
-  logratio.mat[ind] <- t(logratio.mat)[ind]
-  
-  
-  logratio.mat[which(is.finite(logratio.mat)==FALSE)] <- 1
-  
-  mc.pval <- t(apply(logratio.mat,1,function(x){
-    s <- p.adjust(x, method = "BH")
-    return(s)
-  }))
-  
-  a <- logratio.mat[upper.tri(logratio.mat,diag=FALSE)==TRUE]
-  
-  b <- matrix(0,ncol=n_otu,nrow=n_otu)
-  b[upper.tri(b)==T] <- p.adjust(a, method = "BH")
-  diag(b)  <- NA
-  ind.1    <- lower.tri(b)
-  b[ind.1] <- t(b)[ind.1]
-  
-  surr.pval <- apply(mc.pval,1,function(x){
-    s0=quantile(x[which(as.numeric(as.character(x))<sig)],0.95)
-    # s0=max(x[which(as.numeric(as.character(x))<alpha)])
-    return(s0)
-  })
-  #########################################
-  ### Conservative
-  if(multcorr==1){
-    W <- apply(b,1,function(x){
-      subp <- length(which(x<sig))
-    })
-    ### Moderate
-  } else if(multcorr==2){
-    W <- apply(mc.pval,1,function(x){
-      subp <- length(which(x<sig))
-    })
-    ### No correction
-  } else if(multcorr==3){
-    W <- apply(logratio.mat,1,function(x){
-      subp <- length(which(x<sig))
-    })
-  }
-  
-  return(W)
-}
-
-
-
-ANCOM.main = function(OTUdat,Vardat,
-                      adjusted,repeated,
-                      main.var,adj.formula,
-                      repeat.var,longitudinal,
-                      random.formula,
-                      multcorr,sig,
-                      prev.cut){
-  
-  p.zeroes=apply(OTUdat[,-1],2,function(x){
-    s=length(which(x==0))/length(x)
-  })
-  
-  zeroes.dist=data.frame(colnames(OTUdat)[-1],p.zeroes,row.names=NULL)
-  colnames(zeroes.dist)=c("Taxon","Proportion_zero")
-  
-  zero.plot = ggplot(zeroes.dist, aes(x=Proportion_zero)) + 
-    geom_histogram(binwidth=0.1,colour="black",fill="white") + 
-    xlab("Proportion of zeroes") + ylab("Number of taxa") +
-    theme_bw()
-  
-  #print(zero.plot)
-  
-  OTUdat.thinned=OTUdat
-  OTUdat.thinned=OTUdat.thinned[,c(1,1+which(p.zeroes<prev.cut))]
-  
-  otu.names=colnames(OTUdat.thinned)[-1]
-  
-  W.detected   <- ancom.W(OTUdat.thinned,Vardat,
-                          adjusted,repeated,
-                          main.var,adj.formula,
-                          repeat.var,longitudinal,random.formula,
-                          multcorr,sig)
-  
-  W_stat       <- W.detected
-  
-  
-  W_frame = data.frame(otu.names,W_stat,row.names=NULL)
-  W_frame = W_frame[order(-W_frame$W_stat),]
-  
-  W_frame$detected_0.9=rep(FALSE,dim(W_frame)[1])
-  W_frame$detected_0.8=rep(FALSE,dim(W_frame)[1])
-  W_frame$detected_0.7=rep(FALSE,dim(W_frame)[1])
-  W_frame$detected_0.6=rep(FALSE,dim(W_frame)[1])
-  
-  W_frame$detected_0.9[which(W_frame$W_stat>0.9*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
-  W_frame$detected_0.8[which(W_frame$W_stat>0.8*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
-  W_frame$detected_0.7[which(W_frame$W_stat>0.7*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
-  W_frame$detected_0.6[which(W_frame$W_stat>0.6*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
-  
-  final_results=list(W_frame,zero.plot)
-  names(final_results)=c("W.taxa","PLot.zeroes")
-  return(final_results)
-}
 
 set.seed(1)
 library(sparseDOSSA)
@@ -636,135 +446,479 @@ Wilcox_BHPMF_metrics <- c(Wilcox_BHPMF_precision, Wilcox_BHPMF_recall, Wilcox_BH
 Wilcox_BHPMF_metrics
 
 
-############ ANCOM ##############
+##mbDenoise
+library(mbDenoise)
+sim_tab_zi_matrix <- as.matrix(sim_tab)
+result <- ZIPPCApn(sim_tab_zi_matrix , family = "negative.binomial", n.factors = 2, rank = TRUE)
+mbDenoise_imputed <- result$muz
+less_pval_mbDenoise <- apply(mbDenoise_imputed, 2, FUN = function(x) pairwise.wilcox.test(x, condition, alternative = "less", p.adjust.method = "none")$p.value)
+greater_pval_mbDenoise <- apply(mbDenoise_imputed, 2, FUN = function(x) pairwise.wilcox.test(x, condition, alternative = "greater", p.adjust.method = "none")$p.value)
+less_identified_mbDenoise <- which(less_pval_mbDenoise < 0.1)
+greater_identified_mbDenoise <- which(greater_pval_mbDenoise < 0.1)
+Wilcox_mbDenoise_precision <- (sum(less_identified_mbDenoise %in% truth_DA) +
+sum(greater_identified_mbDenoise %in% truth_DA)) / (length(less_identified_mbDenoise) + length(greater_identified_mbDenoise))
+Wilcox_mbDenoise_recall <- (sum(less_identified_mbDenoise %in% truth_DA) +
+sum(greater_identified_mbDenoise %in% truth_DA)) / length(truth_DA)
+Wilcox_mbDenoise_F1_score <- 2 * (Wilcox_mbDenoise_precision * Wilcox_mbDenoise_recall) / (Wilcox_mbDenoise_precision + Wilcox_mbDenoise_recall)
 
-Vardat <- cbind(rnorm(100,0,1), condition)
+Wilcox_mbDenoise_metrics <- c(Wilcox_mbDenoise_precision, Wilcox_mbDenoise_recall, Wilcox_mbDenoise_F1_score)
+
+
+############ ANCOM-BC2 ##############
+library(devtools)
+library(ANCOMBC)
+Vardat <- cbind(rnorm(100, 0, 1), condition)
 colnames(Vardat) <- c("rand_cov", "condition")
 Vardat <- cbind(1:100, Vardat)
 colnames(Vardat)[1] <- "Sample.ID"
-OTUdat <- 10^sim_tab - 1.01
-taxanames <- unlist( lapply(1:dim(sim_tab)[2], FUN = function(x){
-  paste("taxa", x, sep = "")
+OTUdat <- 10^sim_tab 
+taxanames <- unlist(lapply(1:dim(sim_tab)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
 }))
 colnames(OTUdat) <- taxanames
 OTUdat <- cbind(1:100, OTUdat)
 colnames(OTUdat)[1] = "Sample.ID"
-
 Vardat <- as.data.frame(Vardat)
 OTUdat <- as.data.frame(OTUdat)
-
-comparison_test=ANCOM.main(OTUdat,
-                           Vardat,
-                           adjusted=F,
-                           repeated=F,
-                           main.var="condition",
-                           adj.formula=NULL,
-                           repeat.var=NULL,
-                           multcorr=2,
-                           sig=0.9,
-                           prev.cut=0.90,
-                           longitudinal = F)
-
-ANCOM_detected <- comparison_test$W.taxa$otu.names[comparison_test$W.taxa$detected_0.6]
-ancom_detected <- unlist(lapply(strsplit(as.character(ANCOM_detected), split = ""), function(x){
-  paste0(x[5:length(x)], collapse = "")
-}))
-
-ancom_detected <- as.numeric(ancom_detected)
-length(ancom_detected) 
-ancom_precision <- sum((ancom_detected %in% truth_DA))/ (length(ancom_detected))
-ancom_recall <- sum((ancom_detected %in% truth_DA))/ (length(truth_DA))
+library(phyloseq)
+OTU_table <- otu_table(OTUdat, taxa_are_rows = FALSE)
+sample_data <- sample_data(Vardat)
+physeq <- phyloseq(OTU_table, sample_data)
+OTUdat <- as(otu_table(physeq), "matrix")
+Vardat <- as(sample_data(physeq), "data.frame")
+comparison_test <- ancombc2(
+data = OTUdat,
+taxa_are_rows = FALSE,
+meta_data = Vardat,
+fix_formula = "condition",
+group = "condition",
+p_adj_method = "BH",
+prv_cut = 0.1,
+lib_cut = 0,
+struc_zero = FALSE,
+neg_lb = FALSE,
+pseudo_sens = FALSE,            
+alpha = 0.05,
+global = TRUE,
+trend = FALSE
+)
+str(comparison_test)
+ancom_detected <- comparison_test$res$taxon[comparison_test$res$diff_condition]
+ancom_detected <- as.numeric(gsub("taxa", "", ancom_detected))
+ancom_precision <- sum((ancom_detected %in% truth_DA)) / length(ancom_detected)
+ancom_recall <- sum((ancom_detected %in% truth_DA)) / length(truth_DA)
 ancom_F1_score <- 2 * (ancom_precision * ancom_recall) / (ancom_precision + ancom_recall)
-
 ancom_metrics <- c(ancom_precision, ancom_recall, ancom_F1_score)
 ancom_metrics
 
 
-#mbimpute
-OTUdat1 <- 10^imputed_mat - 1.01
-taxanames <- unlist( lapply(1:dim(imputed_mat)[2], FUN = function(x){
-  paste("taxa", x, sep = "")
+###mbImpute
+OTUdat1 <- imputed_mat
+OTUdat1_log<-10^imputed_mat
+taxanames <- unlist(lapply(1:dim(imputed_mat)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
 }))
-colnames(OTUdat1) <- taxanames
-OTUdat1 <- cbind(1:100, OTUdat1)
-colnames(OTUdat1)[1] = "Sample.ID"
+colnames(OTUdat1_log) <- taxanames
+OTUdat1_log <- cbind(1:100, OTUdat1_log)
+colnames(OTUdat1_log)[1] = "Sample.ID"
+OTUdat1_log <- as.data.frame(OTUdat1_log)
+Vardat <- as.data.frame(Vardat)
+Vardat$condition <- as.factor(Vardat$condition)
+comparison_test1 <- ancombc2(
+data = OTUdat1_log,
+taxa_are_rows = FALSE,
+meta_data = Vardat,
+fix_formula = "condition",
+group = "condition",
+p_adj_method = "BH",
+prv_cut = 0.1,
+lib_cut = 0,
+struc_zero = FALSE,
+neg_lb = FALSE,
+pseudo_sens = FALSE,            
+alpha = 0.05,
+global = TRUE,
+trend = FALSE
+)
+str(comparison_test1)
+ancom_detected1 <- comparison_test1$res$taxon[comparison_test1$res$diff_condition]
+ancom_detected1 <- as.numeric(gsub("taxa", "", ancom_detected1))
+ancom_precision_mbImpute <- sum((ancom_detected1 %in% truth_DA)) / length(ancom_detected1)
+ancom_recall_mbImpute <- sum((ancom_detected1 %in% truth_DA)) / length(truth_DA)
+ancom_F1_score_mbImpute <- 2 * (ancom_precision_mbImpute * ancom_recall_mbImpute) / (ancom_precision_mbImpute + ancom_recall_mbImpute)
+ancom_metrics_mbImpute <- c(ancom_precision_mbImpute, ancom_recall_mbImpute, ancom_F1_score_mbImpute)
+ancom_metrics_mbImpute
 
-OTUdat1 <- as.data.frame(OTUdat1)
 
-comparison_test1=ANCOM.main(OTUdat1,
-                            Vardat,
-                            adjusted=F,
-                            repeated=F,
-                            main.var="condition",
-                            adj.formula=NULL,
-                            repeat.var=NULL,
-                            multcorr=2,
-                            sig=0.9,
-                            prev.cut=0.90,
-                            longitudinal = F)
 
-ANCOM_detected1 <- comparison_test1$W.taxa$otu.names[comparison_test1$W.taxa$detected_0.6]
-ancom_detected1 <- unlist(lapply(strsplit(as.character(ANCOM_detected1), split = ""), function(x){
-  paste0(x[5:length(x)], collapse = "")
-}))
-
-ancom_detected1 <- as.numeric(ancom_detected1)
-length(ancom_detected1) 
-ancom_mbimpute_precision <- sum((ancom_detected1 %in% truth_DA))/ (length(ancom_detected1))
-ancom_mbimpute_recall <- sum((ancom_detected1 %in% truth_DA))/ (length(truth_DA))
-ancom_mbimpute_F1_score <- 2 * (ancom_mbimpute_precision * ancom_mbimpute_recall) / (ancom_mbimpute_precision + ancom_mbimpute_recall)
-ancom_mbimpute_metrics <- c(ancom_mbimpute_precision, ancom_mbimpute_recall, ancom_mbimpute_F1_score)
-
-ancom_mbimpute_metrics
-
-#TphPMF
-OTUdat2 <- 10^bhmpf_pre_data -1.01
-taxanames <- unlist( lapply(1:dim(bhmpf_pre_data)[2], FUN = function(x){
-  paste("taxa", x, sep = "")
+###TphPMF
+OTUdat2 <- 10^(bhmpf_pre_data)
+taxanames <- unlist(lapply(1:dim(bhmpf_pre_data)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
 }))
 colnames(OTUdat2) <- taxanames
 OTUdat2 <- cbind(1:100, OTUdat2)
 colnames(OTUdat2)[1] = "Sample.ID"
+OTUdat2 <- as.data.frame(OTUdat2)
+comparison_test2 <- ancombc2(
+data = OTUdat2,
+taxa_are_rows = FALSE,
+meta_data = Vardat,
+fix_formula = "condition",
+group = "condition",
+p_adj_method = "BH",
+prv_cut = 0.1,
+lib_cut = 0,
+struc_zero = FALSE,
+neg_lb = FALSE,
+pseudo_sens = FALSE,            
+alpha = 0.05,
+global = TRUE,
+trend = FALSE
+)
+ancom_detected2 <- comparison_test2$res$taxon[comparison_test2$res$diff_condition]
+ancom_detected2 <- as.numeric(gsub("taxa", "", ancom_detected2))
+ancom_precision_TphPMF <- sum((ancom_detected2 %in% truth_DA)) / length(ancom_detected2)
+ancom_recall_TphPMF <- sum((ancom_detected2 %in% truth_DA)) / length(truth_DA)
+ancom_F1_score_TphPMF <- 2 * (ancom_precision_TphPMF * ancom_recall_TphPMF) / (ancom_precision_TphPMF + ancom_recall_TphPMF)
+ancom_metrics_TphPMF <- c(ancom_precision_TphPMF, ancom_recall_TphPMF, ancom_F1_score_TphPMF)
+ancom_metrics_TphPMF
 
+
+###mbDenoise
+OTUdat3<-10^mbDenoise_imputed
+taxanames <- unlist(lapply(1:dim(imputed_mat)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
+}))
+OTUdat3_log <- cbind(1:100, OTUdat3)
+colnames(OTUdat3_log)[1] = "Sample.ID"
+OTUdat3_log <- as.data.frame(OTUdat3_log)
+Vardat <- as.data.frame(Vardat)
+Vardat$condition <- as.factor(Vardat$condition)
+comparison_test3 <- ancombc2(
+data = OTUdat3_log,
+taxa_are_rows = FALSE,
+meta_data = Vardat,
+fix_formula = "condition",
+group = "condition",
+p_adj_method = "BH",
+prv_cut = 0.1,
+lib_cut = 0,
+struc_zero = FALSE,
+neg_lb = FALSE,
+pseudo_sens = FALSE,           
+alpha = 0.05,
+global = TRUE,
+trend = FALSE
+)
+str(comparison_test3)
+ancom_detected3 <- comparison_test3$res$taxon[comparison_test3$res$diff_condition]
+ancom_precision3 <- sum((ancom_detected3 %in% truth_DA)) / length(ancom_detected3)
+ancom_recall3 <- sum((ancom_detected3 %in% truth_DA)) / length(truth_DA)
+ancom_F1_score3 <- 2 * (ancom_precision3 * ancom_recall3) / (ancom_precision3 + ancom_recall3)
+ancom_metrics_mbDenoise <- c(ancom_precision3, ancom_recall3, ancom_F1_score3)
+ancom_metrics_mbDenoise
+
+
+######LOCOM#####
+library(LOCOM)
+Vardat <- cbind(rnorm(100, 0, 1), condition)  
+colnames(Vardat) <- c("rand_cov", "condition")  
+Vardat <- cbind(1:100, Vardat)  
+colnames(Vardat)[1] <- "Sample.ID"  
+OTUdat <- 10^sim_tab  
+taxanames <- unlist(lapply(1:dim(sim_tab)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
+}))  
+colnames(OTUdat) <- taxanames  
+OTUdat <- cbind(1:100, OTUdat)  
+colnames(OTUdat)[1] <- "Sample.ID" 
+Vardat <- as.data.frame(Vardat)
+OTUdat <- as.data.frame(OTUdat)
+
+Y <- Vardat$condition  
+C <- Vardat$rand_cov  
+result <- locom(
+otu.table = OTUdat[, -1],  
+Y = Y,                     
+C = C,                   
+seed = 1,                 
+n.cores = 4,               
+n.perm.max = 1000          
+)
+locom_detected<-result$detected.otu
+locom_detected <- as.numeric(gsub("taxa", "", locom_detected))
+locom_precision <- sum((locom_detected %in% truth_DA)) / length(locom_detected)
+locom_recall <- sum((locom_detected %in% truth_DA)) / length(truth_DA)
+locom_F1_score <- 2 * (locom_precision * locom_recall) / (locom_precision + locom_recall)
+locom_metrics <- c(locom_precision, locom_recall, locom_F1_score)
+locom_metrics
+
+###mbImpute
+Vardat <- cbind(rnorm(100, 0, 1), condition) 
+colnames(Vardat) <- c("rand_cov", "condition") 
+Vardat <- cbind(1:100, Vardat)  
+colnames(Vardat)[1] <- "Sample.ID"  
+OTUdat1 <- imputed_mat  
+taxanames <- unlist(lapply(1:dim(sim_tab)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
+})) 
+colnames(OTUdat1) <- taxanames 
+OTUdat1 <- cbind(1:100, OTUdat1)  
+colnames(OTUdat1)[1] <- "Sample.ID" 
+Vardat <- as.data.frame(Vardat)
+OTUdat1 <- as.data.frame(OTUdat1)
+
+Y <- Vardat$condition  
+C <- Vardat$rand_cov   
+result <- locom(
+otu.table = OTUdat1[, -1],  
+Y = Y,                    
+C = C,                    
+seed = 1,                  
+n.cores = 4,               
+n.perm.max = 1000          
+)
+locom_detected1<-result$detected.otu
+locom_detected1 <- as.numeric(gsub("taxa", "", locom_detected1))
+locom_precision_mbImpute <- sum((locom_detected1 %in% truth_DA)) / length(locom_detected1)
+locom_recall_mbImpute <- sum((locom_detected1 %in% truth_DA)) / length(truth_DA)
+locom_F1_score_mbImpute <- 2 * (locom_precision_mbImpute * locom_recall_mbImpute) / (locom_precision_mbImpute + locom_recall_mbImpute)
+locom_metrics_mbImpute <- c(locom_precision_mbImpute, locom_recall_mbImpute, locom_F1_score_mbImpute)
+locom_metrics_mbImpute
+
+###Tphpmf
+Vardat <- cbind(rnorm(100, 0, 1), condition)  
+colnames(Vardat) <- c("rand_cov", "condition")  
+Vardat <- cbind(1:100, Vardat)  
+colnames(Vardat)[1] <- "Sample.ID"  
+OTUdat2 <- bhmpf_pre_data   
+taxanames <- unlist(lapply(1:dim(sim_tab)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
+})) 
+colnames(OTUdat2) <- taxanames  
+OTUdat2 <- cbind(1:100, OTUdat2)  
+colnames(OTUdat2)[1] <- "Sample.ID"  
+Vardat <- as.data.frame(Vardat)
 OTUdat2 <- as.data.frame(OTUdat2)
 
-comparison_test2=ANCOM.main(OTUdat2,
-                            Vardat,
-                            adjusted=F,
-                            repeated=F,
-                            main.var="condition",
-                            adj.formula=NULL,
-                            repeat.var=NULL,
-                            multcorr=2,
-                            sig=0.9,
-                            prev.cut=0.90,
-                            longitudinal = F)
+Y <- Vardat$condition  
+C <- Vardat$rand_cov  
+result <- locom(
+otu.table = OTUdat2[, -1],  
+Y = Y,                    
+C = C,                     
+seed = 1,                  
+n.cores = 4,               
+n.perm.max = 1000          
+)
+print(result$detected.otu)
+locom_detected2<-result$detected.otu
+locom_detected2 <- as.numeric(gsub("taxa", "", locom_detected2))
+locom_precision_TphPMF <- sum((locom_detected2 %in% truth_DA)) / length(locom_detected2)
+locom_recall_TphPMF <- sum((locom_detected2 %in% truth_DA)) / length(truth_DA)
+locom_F1_score_TphPMF <- 2 * (locom_precision_TphPMF * locom_recall_TphPMF) / (locom_precision_TphPMF + locom_recall_TphPMF)
+locom_metrics_TphPMF <- c(locom_precision_TphPMF, locom_recall_TphPMF, locom_F1_score_TphPMF)
+locom_metrics_TphPMF
 
-ANCOM_detected2 <- comparison_test2$W.taxa$otu.names[comparison_test2$W.taxa$detected_0.6]
-ancom_detected2 <- unlist(lapply(strsplit(as.character(ANCOM_detected2), split = ""), function(x){
-  paste0(x[5:length(x)], collapse = "")
-}))
+###mbDenoise
+Vardat <- cbind(rnorm(100, 0, 1), condition)  
+colnames(Vardat) <- c("rand_cov", "condition")  
+Vardat <- cbind(1:100, Vardat)  
+colnames(Vardat)[1] <- "Sample.ID" 
+OTUdat3 <- 10^mbDenoise_imputed
+taxanames <- unlist(lapply(1:dim(sim_tab)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
+}))  
+colnames(OTUdat3) <- taxanames  
+OTUdat3 <- cbind(1:100, OTUdat3) 
+colnames(OTUdat3)[1] <- "Sample.ID" 
+Vardat <- as.data.frame(Vardat)
+OTUdat3 <- as.data.frame(OTUdat3)
+Y <- Vardat$condition  
+C <- Vardat$rand_cov   
+result1 <- locom(
+otu.table = OTUdat3[, -1],  
+Y = Y,                     
+C = C,                    
+seed = 1,                  
+n.cores = 4,               
+n.perm.max = 1000          
+)
+print(result1$detected.otu)
+locom_detected3<-result1$detected.otu
+locom_detected3 <- as.numeric(gsub("taxa", "", locom_detected3))
+locom_precision_mbDenoise <- sum((locom_detected3 %in% truth_DA)) / length(locom_detected3)
+locom_recall_mbDenoise <- sum((locom_detected3 %in% truth_DA)) / length(truth_DA)
+locom_F1_score_mbDenoise <- 2 * (locom_precision_mbDenoise * locom_recall_mbDenoise) / (locom_precision_mbDenoise + locom_recall_mbDenoise)
+locom_metrics_mbDenoise <- c(locom_precision_mbDenoise, locom_recall_mbDenoise, locom_F1_score_mbDenoise)
+locom_metrics_mbDenoise
 
-ancom_detected2 <- as.numeric(ancom_detected2)
-length(ancom_detected2) 
+
+######Linda######
+library(LinDA)
+Vardat <- cbind(rnorm(100, 0, 1), condition)  
+colnames(Vardat) <- c("rand_cov", "condition") 
+Vardat <- cbind(1:100, Vardat)  
+colnames(Vardat)[1] <- "Sample.ID"  
+OTUdat <- 10^sim_tab   
+taxanames <- unlist(lapply(1:dim(sim_tab)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
+}))  
+colnames(OTUdat) <- taxanames  
+OTUdat <- cbind(1:100, OTUdat)  
+colnames(OTUdat)[1] <- "Sample.ID" 
+Vardat <- as.data.frame(Vardat)
+OTUdat <- as.data.frame(OTUdat)
+otu.tab <- OTUdat[, -1]
+otu.tab<-t(otu.tab)
+meta <- Vardat
+colnames(meta)[2] <- "rand_cov" 
+colnames(meta)[3] <- "condition"  
+linda.obj <- linda(
+otu.tab = otu.tab,        
+meta = meta,             
+formula = '~condition+rand_cov',  
+alpha = 0.05,            
+prev.cut = 0.001,          
+lib.cut = 0.01,           
+winsor.quan = NULL        
+)
+significant_otus <- rownames(linda.obj$output[[1]])[which(linda.obj$output[[1]]$reject)]
+print(significant_otus)
+linda_detected<-significant_otus
+linda_detected <- as.numeric(gsub("taxa", "", linda_detected))
+linda_precision <- sum((linda_detected %in% truth_DA)) / length(linda_detected)
+linda_recall <- sum((linda_detected %in% truth_DA)) / length(truth_DA)
+linda_F1_score <- 2 * (linda_precision * linda_recall) / (linda_precision + linda_recall)
+linda_metrics <- c(linda_precision, linda_recall, linda_F1_score)
+linda_metrics
+
+###mbimpute
+Vardat <- cbind(rnorm(100, 0, 1), condition) 
+colnames(Vardat) <- c("rand_cov", "condition") 
+Vardat <- cbind(1:100, Vardat)  
+colnames(Vardat)[1] <- "Sample.ID" 
+
+OTUdat1 <- imputed_mat   
+taxanames <- unlist(lapply(1:dim(sim_tab)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
+}))  
+print(taxanames)
+colnames(OTUdat1) <- taxanames  
+OTUdat1 <- cbind(1:100, OTUdat1)  
+colnames(OTUdat1)[1] <- "Sample.ID"  
+Vardat <- as.data.frame(Vardat)
+OTUdat <- as.data.frame(OTUdat1)
+otu.tab <- OTUdat1[, -1]
+otu.tab<-t(otu.tab)
+meta <- Vardat
+colnames(meta)[2] <- "rand_cov"  
+colnames(meta)[3] <- "condition"  
+linda.obj1 <- linda(
+otu.tab = otu.tab,        
+meta = meta,             
+formula = '~condition+rand_cov', 
+alpha = 0.05,             
+prev.cut = 0.001,          
+lib.cut = 0.01,           
+winsor.quan = NULL        
+  )
+str(linda.obj1)
+significant_otus1 <- rownames(linda.obj1$output[[1]])[which(linda.obj1$output[[1]]$reject)]
+linda_detected1<-significant_otus1
+linda_detected1 <- as.numeric(gsub("taxa", "", linda_detected1))
+linda_precision1 <- sum((linda_detected1 %in% truth_DA)) / length(linda_detected1)
+linda_recall1 <- sum((linda_detected1 %in% truth_DA)) / length(truth_DA)
+linda_F1_score1 <- 2 * (linda_precision1 * linda_recall1) / (linda_precision1 + linda_recall1)
+linda_metrics_mbImpute <- c(linda_precision1, linda_recall1, linda_F1_score1)
+linda_metrics_mbImpute
 
 
-ancom_precison_recall_BHPMF <- c( sum((ancom_detected2 %in% truth_DA))/ (length(ancom_detected2)),
-                                  sum((ancom_detected2 %in% truth_DA))/ (length(truth_DA)) )
+###Tphpmf
+Vardat <- cbind(rnorm(100, 0, 1), condition) 
+colnames(Vardat) <- c("rand_cov", "condition") 
+Vardat <- cbind(1:100, Vardat) 
+colnames(Vardat)[1] <- "Sample.ID"  
+OTUdat2 <- 10^(bhmpf_pre_data) 
+taxanames <- unlist(lapply(1:dim(sim_tab)[2], FUN = function(x) {
+paste("taxa", x, sep = "")
+}))  
+print(taxanames)
+colnames(OTUdat2) <- taxanames 
+OTUdat2 <- cbind(1:100, OTUdat2)  
+colnames(OTUdat2)[1] <- "Sample.ID"  
+Vardat <- as.data.frame(Vardat)
+OTUdat2 <- as.data.frame(OTUdat2)
+otu.tab <- OTUdat2[, -1]
+otu.tab<-t(otu.tab)
+meta <- Vardat
+colnames(meta)[2] <- "rand_cov"  
+colnames(meta)[3] <- "condition"  
+linda.obj2 <- linda(
+otu.tab = otu.tab,        
+meta = meta,              
+formula = '~condition+rand_cov',  
+alpha = 0.05,             
+prev.cut = 0.001,           
+lib.cut = 0.01,          
+winsor.quan = NULL       
+)
+str(linda.obj2)
+significant_otus2 <- rownames(linda.obj2$output[[1]])[which(linda.obj2$output[[1]]$reject)]
+linda_detected2<-significant_otus2
+linda_detected2 <- as.numeric(gsub("taxa", "", linda_detected2))
+linda_precision2 <- sum((linda_detected2 %in% truth_DA)) / length(linda_detected2)
+linda_recall2 <- sum((linda_detected2 %in% truth_DA)) / length(truth_DA)
+linda_F1_score2 <- 2 * (linda_precision2 * linda_recall2) / (linda_precision2 + linda_recall2)
+linda_metrics_TphPMF <- c(linda_precision2, linda_recall2, linda_F1_score2)
+linda_metrics_TphPMF
 
 
 
-print(ancom_precison_recall_BHPMF)
-ancom_BHPMF_precision <- sum((ancom_detected2 %in% truth_DA))/ (length(ancom_detected2))
-ancom_BHPMF_recall <- sum((ancom_detected2 %in% truth_DA))/ (length(truth_DA))
-ancom_BHPMF_F1_score <- 2 * (ancom_BHPMF_precision * ancom_BHPMF_recall) / (ancom_BHPMF_precision + ancom_BHPMF_recall)
-ancom_BHPMF_metrics <- c(ancom_BHPMF_precision, ancom_BHPMF_recall, ancom_BHPMF_F1_score)
+###mbDenoise
+Vardat <- cbind(rnorm(100, 0, 1), condition)  
+colnames(Vardat) <- c("rand_cov", "condition")  
+Vardat <- cbind(1:100, Vardat) 
+colnames(Vardat)[1] <- "Sample.ID"  
 
-ancom_BHPMF_metrics
+OTUdat3 <- 10^(mbDenoise_imputed) 
+taxanames <- unlist(lapply(1:dim(sim_tab)[2], FUN = function(x) {
+  paste("taxa", x, sep = "")
+})) 
+print(taxanames)
+colnames(OTUdat3) <- taxanames  
+OTUdat3 <- cbind(1:100, OTUdat3)  
+colnames(OTUdat3)[1] <- "Sample.ID"  
+Vardat <- as.data.frame(Vardat)
+OTUdat3 <- as.data.frame(OTUdat3)
+otu.tab <- OTUdat3[, -1]
+otu.tab<-t(otu.tab)
+meta <- Vardat
+colnames(meta)[2] <- "rand_cov"  
+colnames(meta)[3] <- "condition"  
+linda.obj3 <- linda(
+  otu.tab = otu.tab,        
+  meta = meta,              
+  formula = '~condition+rand_cov', 
+  alpha = 0.05,            
+  prev.cut = 0.001,           
+  lib.cut = 0.01,          
+  winsor.quan = NULL        
+)
+str(linda.obj3)
+significant_otus3 <- rownames(linda.obj3$output[[1]])[which(linda.obj3$output[[1]]$reject)]
+print(significant_otus3)
+linda_detected3<-significant_otus3
+linda_detected3 <- as.numeric(gsub("taxa", "", linda_detected3))
+linda_precision3 <- sum((linda_detected3 %in% truth_DA)) / length(linda_detected3)
+linda_recall3 <- sum((linda_detected3 %in% truth_DA)) / length(truth_DA)
+linda_F1_score3 <- 2 * (linda_precision3 * linda_recall3) / (linda_precision3 + linda_recall3)
+linda_metrics_mbDenoise <- c(linda_precision3, linda_recall3, linda_F1_score3)
+linda_metrics_mbDenoise
 
 
-
-
+################metagenomeSeq#########################
 library(metagenomeSeq)
 
 Vardat <- cbind(rnorm(100,0,1), condition)
@@ -789,7 +943,7 @@ fit.eb <- eBayes(fit@fit)
 pvalues <- fit.eb$p.value
 p.values <- pvalues[, "conditions1"]
 adjusted_pvalues <- p.adjust(p.values, method = "BH")
-significant_indices <- which(adjusted_pvalues < 0.3)
+significant_indices <- which(adjusted_pvalues < 0.05)
 significant_indices_unnamed <- unname(significant_indices)
 
 metagenomeSeq_precision <- (sum(significant_indices_unnamed %in% truth_DA) ) / (length(significant_indices_unnamed) )
@@ -820,7 +974,7 @@ fit.eb2 <- eBayes(fit2@fit)
 pvalues2 <- fit.eb2$p.value
 p.values2 <- pvalues2[, "conditions1"]
 adjusted_pvalues2 <- p.adjust(p.values2, method = "BH")
-significant_indices2 <- which(adjusted_pvalues2 < 0.3)
+significant_indices2 <- which(adjusted_pvalues2 < 0.05)
 significant_indices_unnamed2 <- unname(significant_indices2)
 metagenomeSeq_mbImpute_precision <- (sum(significant_indices_unnamed2 %in% truth_DA) ) / (length(significant_indices_unnamed2) )
 metagenomeSeq_mbImpute_recall <- (sum(significant_indices_unnamed2 %in% truth_DA) ) / (length(truth_DA))
@@ -848,7 +1002,7 @@ fit.eb3 <- eBayes(fit3@fit)
 pvalues3 <- fit.eb3$p.value
 p.values3 <- pvalues3[, "conditions1"]
 adjusted_pvalues3 <- p.adjust(p.values3, method = "BH")
-significant_indices3 <- which(adjusted_pvalues3 < 0.3)
+significant_indices3 <- which(adjusted_pvalues3 < 0.05)
 significant_indices_unnamed3 <- unname(significant_indices3)
 metagenomeSeq_BHPMF_precision <- (sum(significant_indices_unnamed3 %in% truth_DA) ) / (length(significant_indices_unnamed3) )
 metagenomeSeq_BHPMF_recall <- (sum(significant_indices_unnamed3 %in% truth_DA) ) / (length(truth_DA))
@@ -858,119 +1012,31 @@ metagenomeSeq_BHPMF_metrics <- c(metagenomeSeq_BHPMF_precision, metagenomeSeq_BH
 metagenomeSeq_BHPMF_metrics
 
 
-#Omnibus
+###mbDenoise
+sim_tab4 <- as.matrix(apply(t(mbDenoise_imputed), 2, as.numeric))
+sim_tab4 <- as.data.frame(sim_tab4)
 
-library(mbzinb)
-Vardat <- cbind(rnorm(100,0,1), condition)
-colnames(Vardat) <- c("rand_cov", "condition")
-mbzinb.dataset <-
-  function(count, sample, taxon=NULL) {
-    #Return some warnings if data type is unexpected.
-    #For now, I don't have anything to do with the taxonomy table so it doesn't matter.
-    if (!inherits(count, "matrix")) {
-      stop("Count table should have class matrix \n")
-    }
-    if (!inherits(sample, "data.frame")) {
-      stop("Sample information should have class data.frame \n")
-    }
-    #Check for null names
-    if (is.null(colnames(count))) {
-      stop("Count matrix must have column names matching sample row names \n")
-    }
-    if (is.null(rownames(sample))) {
-      stop("Sample data frame must have column names \n")
-    }
-    if (!is.null(taxon) & is.null(rownames(taxon))) {
-      stop("Taxonomy table must have row names \n")
-    }
-    #Reorder samples to match names
-    sample.match <- match(colnames(count), rownames(sample))
-    if (any(is.na(sample.match))) {
-      cat(paste(sum(is.na(sample.match)), "samples in count table trimmed due to missing sample information \n"))
-      new.count <- count[, !is.na(sample.match)]
-    } else {
-      new.count <- count
-    }
-    new.sample <- sample[colnames(new.count), , drop=FALSE]
-    #If taxonomy data supplied, reorder to match names
-    if (!is.null(taxon)) {
-      taxon.match <- match(rownames(count), rownames(taxon))
-      if (any(is.na(taxon.match))) {
-        cat(paste(sum(is.na(taxon.match)), "taxa in count table trimmed due to missing taxonomy information \n"))
-        new.count <- new.count[!is.na(taxon.match), ]
-      } else {
-        new.count <- new.count
-      }
-      new.taxon <- taxon[rownames(new.count), ]
-    } else {
-      new.taxon <- NULL
-    }
-    l <- list(count=new.count, sample=new.sample, taxon=new.taxon, filtered=FALSE)
-    class(l) <- "mbzinb"
-    return(l)
-  }
-
-
-
-Vardat <- as.data.frame(Vardat)
-OTUdat <- 100000000000000000^sim_tab
-sim_tabb<-t(OTUdat)
-colnames(sim_tabb) <- rownames(Vardat)
-mbzinb_data <- mbzinb.dataset(sim_tabb, Vardat)
-mbzinb_data_filtered <- filter.dataset(mbzinb_data, min.prev=0.1, min.reads=50, niter=1)
-mbzinb_test_result <- mbzinb.test(mbzinb_data_filtered, group = "condition")
-p_values <- mbzinb_test_result$results$PValue
-p_values_adjusted <- p.adjust(p_values, method = "BH")
-print(p_values_adjusted)
-significant_indices_Omnibus <- which(p_values_adjusted < 0.05)
-significant_indices_Omnibus_unnamed <- unname(significant_indices_Omnibus )
-Omnibus_precision <- (sum(significant_indices_Omnibus_unnamed %in% truth_DA) ) / (length(significant_indices_Omnibus_unnamed) )
-Omnibus_recall <- (sum(significant_indices_Omnibus_unnamed %in% truth_DA) ) / (length(truth_DA))
-Omnibus_F1_score <- 2 * (Omnibus_precision * Omnibus_recall) / (Omnibus_precision + Omnibus_recall)
-
-Omnibus_metrics <- c(Omnibus_precision, Omnibus_recall, Omnibus_F1_score)
-Omnibus_metrics
-
-#mbImpute
-OTUdat1 <- 100000000000000000^imputed_mat
-sim_tabb1<-t(OTUdat1)
-colnames(sim_tabb1) <- rownames(Vardat)
-mbzinb_data1 <- mbzinb.dataset(sim_tabb1, Vardat)
-mbzinb_data_filtered1 <- filter.dataset(mbzinb_data1, min.prev=0.1, min.reads=50, niter=1)
-mbzinb_test_result1 <- mbzinb.test(mbzinb_data_filtered1, group = "condition")
-p_values1 <- mbzinb_test_result1$results$PValue
-p_values_adjusted1 <- p.adjust(p_values1, method = "BH")
-print(p_values_adjusted1)
-significant_indices_Omnibus1 <- which(p_values_adjusted1 < 0.05)
-significant_indices_Omnibus_unnamed1 <- unname(significant_indices_Omnibus1 )
-Omnibus_mbImpute_precision <- (sum(significant_indices_Omnibus_unnamed1 %in% truth_DA) ) / (length(significant_indices_Omnibus_unnamed1) )
-Omnibus_mbImpute_recall <- (sum(significant_indices_Omnibus_unnamed1 %in% truth_DA) ) / (length(truth_DA))
-Omnibus_mbImpute_F1_score <- 2 * (Omnibus_mbImpute_precision * Omnibus_mbImpute_recall) / (Omnibus_mbImpute_precision + Omnibus_mbImpute_recall)
-
-Omnibus_mbImpute_metrics <- c(Omnibus_mbImpute_precision, Omnibus_mbImpute_recall, Omnibus_mbImpute_F1_score)
-Omnibus_mbImpute_metrics
-
-##TphPMF
-
-OTUdat2 <- 100000000000000000000000000000000000000000000000000000000^bhmpf_pre_data+10
-sim_tabb2<-t(OTUdat2)
-colnames(sim_tabb2) <- rownames(Vardat)
-mbzinb_data2 <- mbzinb.dataset(sim_tabb2, Vardat)
-mbzinb_data_filtered2 <- filter.dataset(mbzinb_data2, min.prev=0.1, min.reads=0.000005, niter=1)
-mbzinb_test_result2 <- mbzinb.test(mbzinb_data_filtered2, group = "condition")
-p_values2 <- mbzinb_test_result2$results$PValue
-print(p_values2)
-p_values_adjusted2 <- p.adjust(p_values2, method = "BH")
-print(p_values_adjusted2)
-significant_indices_Omnibus2 <- which(p_values_adjusted2 < 0.05)
-print(significant_indices_Omnibus2)
-significant_indices_Omnibus_unnamed2 <- unname(significant_indices_Omnibus2 )
-
-Omnibus_BHPMF_precision <- (sum(significant_indices_Omnibus_unnamed2 %in% truth_DA) ) / (length(significant_indices_Omnibus_unnamed2) )
-Omnibus_BHPMF_recall <- (sum(significant_indices_Omnibus_unnamed2 %in% truth_DA) ) / (length(truth_DA))
-Omnibus_BHPMF_F1_score <- 2 * (Omnibus_BHPMF_precision * Omnibus_BHPMF_recall) / (Omnibus_BHPMF_precision + Omnibus_BHPMF_recall)
-
-Omnibus_BHPMF_metrics <- c(Omnibus_BHPMF_precision, Omnibus_BHPMF_recall, Omnibus_BHPMF_F1_score)
+colnames(sim_tab4) <- 1:100
+mr4 <- newMRexperiment(counts = sim_tab4, phenoData = AnnotatedDataFrame(Vardat))
+mr_norm4 <- cumNorm(mr4)
+conditions <- factor(Vardat$condition)
+fit4 <- fitZig(obj = mr_norm4, mod = model.matrix(~ conditions),useCSSoffset = FALSE,
+               zeroInflation = FALSE,
+               distribution = "gaussian")
+summary(fit4)
+library(limma)
+fit.eb4 <- eBayes(fit4@fit)
+pvalues4 <- fit.eb4$p.value
+p.values4 <- pvalues4[, "conditions1"]
+print(pvalues4)
+adjusted_pvalues4 <- p.adjust(p.values4, method = "BH")
+significant_indices4 <- which(p.values4 < 0.05)
+significant_indices_unnamed4 <- unname(significant_indices4)
+metagenomeSeq_precision4 <- (sum(significant_indices_unnamed4 %in% truth_DA) ) / (length(significant_indices_unnamed4) )
+metagenomeSeq_recall4 <- (sum(significant_indices_unnamed4 %in% truth_DA) ) / (length(truth_DA))
+metagenomeSeq_F1_score4 <- 2 * (metagenomeSeq_precision4 * metagenomeSeq_recall4) / (metagenomeSeq_precision4 + metagenomeSeq_recall4)
+metagenomeSeq_mbDenoise_metrics <- c(metagenomeSeq_precision4, metagenomeSeq_recall4, metagenomeSeq_F1_score4)
+metagenomeSeq_mbDenoise_metrics
 
 
 
@@ -989,7 +1055,7 @@ Vardat <- cbind(rnorm(100,0,1), condition)
 colnames(Vardat) <- c("rand_cov", "condition")
 Vardat <- as.data.frame(Vardat)
 sim_tabbb<-t(sim_tab)
-OTUdat <- floor(100000000000000^sim_tabbb +1)
+OTUdat <- floor(10^sim_tabbb +1.01)
 physeq2 <- phyloseq(otu_table(OTUdat, taxa_are_rows = TRUE), 
                     sample_data(Vardat))
 sample_data(physeq2)$condition <- factor(sample_data(physeq2)$condition)
@@ -1038,7 +1104,7 @@ DESeq2_mbimpute_metrics <- c(DESeq2_mbimpute_precision, DESeq2_mbimpute_recall, 
 ##TphPMF
 
 sim_tabbb1<-t(bhmpf_pre_data)
-OTUdat <- floor(10000000000000000000000000000000000000000000000000000000000000000^sim_tabbb1 +1)
+OTUdat <- floor(10^sim_tabbb1 +1.01)
 
 colnames(OTUdat) <- rownames(Vardat)
 otu_table_object <- otu_table(OTUdat, taxa_are_rows = TRUE)
@@ -1066,61 +1132,89 @@ DESeq2_BHPMF_F1_score <- 2 * (DESeq2_BHPMF_precision * DESeq2_BHPMF_recall) / (D
 
 DESeq2_BHPMF_metrics <- c(DESeq2_BHPMF_precision, DESeq2_BHPMF_recall, DESeq2_BHPMF_F1_score)
 
+###mbDenoise
+
+sim_tabbb3 <- t(mbDenoise_imputed)
+sim_tabbb3 <- floor(10^sim_tabbb3 +1.01)
+physeq3 <- phyloseq(otu_table(sim_tabbb3, taxa_are_rows = TRUE),
+sample_data(Vardat))
+sample_data(physeq3)$condition <- factor(sample_data(physeq3)$condition)
+Deseq2_obj <- phyloseq_to_deseq2(physeq3, ~ condition)
+results <- DESeq(Deseq2_obj, test="Wald", fitType="parametric")
+dds_results <- results(results)
+yyresults <- dds_results$pvalue
+significant_indices_DESeq2 <- which(yyresults < 0.05)
+significant_indices_DESeq2_unnamed3 <- unname(significant_indices_DESeq2 )
+DESeq2_precision3 <- (sum(significant_indices_DESeq2_unnamed3 %in% truth_DA) ) / (length(significant_indices_DESeq2_unnamed3) )
+DESeq2_recall3 <- (sum(significant_indices_DESeq2_unnamed3 %in% truth_DA) ) / (length(truth_DA))
+DESeq2_F1_score3 <- 2 * (DESeq2_precision3 * DESeq2_recall3) / (DESeq2_precision3 + DESeq2_recall3)
+DESeq2_mbDenoise_metrics <- c(DESeq2_precision3, DESeq2_recall3, DESeq2_F1_score3)
+DESeq2_mbDenoise_metrics
+
+
 
 library(ggplot2)
-values <- c(
-  Wilcox_precision, Wilcox_recall, Wilcox_F1_score,
-  Wilcox_mbImpute_precision, Wilcox_mbImpute_recall, Wilcox_mbImpute_F1_score,
-  Wilcox_BHPMF_precision, Wilcox_BHPMF_recall, Wilcox_BHPMF_F1_score,
-  ancom_precision, ancom_recall, ancom_F1_score,
-  ancom_mbimpute_precision, ancom_mbimpute_recall, ancom_mbimpute_F1_score,
-  ancom_BHPMF_precision, ancom_BHPMF_recall, ancom_BHPMF_F1_score,
-  metagenomeSeq_precision, metagenomeSeq_recall, metagenomeSeq_F1_score,
-  metagenomeSeq_mbImpute_precision, metagenomeSeq_mbImpute_recall, metagenomeSeq_mbImpute_F1_score,
-  metagenomeSeq_BHPMF_precision, metagenomeSeq_BHPMF_recall, metagenomeSeq_BHPMF_F1_score,
-  DESeq2_precision, DESeq2_recall, DESeq2_F1_score,
-  DESeq2_mbimpute_precision, DESeq2_mbimpute_recall, DESeq2_mbimpute_F1_score,
-  DESeq2_BHPMF_precision, DESeq2_BHPMF_recall, DESeq2_BHPMF_F1_score,
-  Omnibus_precision, Omnibus_recall, Omnibus_F1_score,
-  Omnibus_mbImpute_precision, Omnibus_mbImpute_recall, Omnibus_mbImpute_F1_score,
-  Omnibus_BHPMF_precision, Omnibus_BHPMF_recall, Omnibus_BHPMF_F1_score)
-print(values)
-
-
-results_df <- data.frame(
-  Method = rep(c("Wilcoxon", "ANCOM", "metagenomeSeq", "DESeq2-phyloseq", "Omnibus"), each = 9),
-  Metric = rep(c("Precision", "Recall", "F1_Score"), times = 5 * 3),
-  Value = values,
-  Imputation = rep(c("DA method", "mbImpute + DA method", "TphPMF + DA method"), times = 5)
+data <- data.frame(
+  Method = rep(c('Wilcoxon', 'ANCOM-BC2', 'metagenomeSeq', 'DESeq2-phyloseq', 'LOCOM', 'LinDA'), each = 12),
+  Metric = factor(rep(c('Precision', 'Recall', 'F1_Score'), times = 24),
+                  levels = c('Precision', 'Recall', 'F1_Score')),
+  Value = c(
+    Wilcox_precision, Wilcox_recall, Wilcox_F1_score,
+    Wilcox_mbImpute_precision, Wilcox_mbImpute_recall, Wilcox_mbImpute_F1_score,
+    Wilcox_BHPMF_precision, Wilcox_BHPMF_recall, Wilcox_BHPMF_F1_score,
+    Wilcox_mbDenoise_precision, Wilcox_mbDenoise_recall, Wilcox_mbDenoise_F1_score,
+    ancom_precision, ancom_recall, ancom_F1_score,
+    ancom_precision_mbImpute, ancom_recall_mbImpute, ancom_F1_score_mbImpute,
+    ancom_precision_TphPMF, ancom_recall_TphPMF, ancom_F1_score_TphPMF,
+    ancom_precision3, ancom_recall3, ancom_F1_score3,
+    metagenomeSeq_precision, metagenomeSeq_recall, metagenomeSeq_F1_score,
+    metagenomeSeq_mbImpute_precision, metagenomeSeq_mbImpute_recall, metagenomeSeq_mbImpute_F1_score,
+    metagenomeSeq_BHPMF_precision, metagenomeSeq_BHPMF_recall, metagenomeSeq_BHPMF_F1_score,
+    metagenomeSeq_precision4, metagenomeSeq_recall4, metagenomeSeq_F1_score4,
+    DESeq2_precision, DESeq2_recall, DESeq2_F1_score,
+    DESeq2_mbimpute_precision, DESeq2_mbimpute_recall, DESeq2_mbimpute_F1_score,
+    DESeq2_BHPMF_precision, DESeq2_BHPMF_recall, DESeq2_BHPMF_F1_score,
+    DESeq2_precision3, DESeq2_recall3, DESeq2_F1_score3,
+    locom_precision, locom_recall, locom_F1_score,
+    locom_precision_mbImpute, locom_recall_mbImpute, locom_F1_score_mbImpute,
+    locom_precision_TphPMF, locom_recall_TphPMF, locom_F1_score_TphPMF,
+    locom_precision_mbDenoise, locom_recall_mbDenoise, locom_F1_score_mbDenoise,
+    linda_precision, linda_recall, linda_F1_score,
+    linda_precision1, linda_recall1, linda_F1_score1,
+    linda_precision2, linda_recall2, linda_F1_score2,
+    linda_precision3, linda_recall3, linda_F1_score3
+  ),
+  Imputation = factor(rep(c('DA method', 'mbImpute + DA method', 'TphPMF + DA method', 'mbDenoise + DA method'), each = 3, times = 6),
+                      levels = c('DA method', 'mbImpute + DA method', 'TphPMF + DA method', 'mbDenoise + DA method'))
 )
+pdf("/Users/hanxinyu/Desktop/mbimpute1/DA_plots.pdf", width = 8, height = 6)
+for (method in unique(data$Method)) {
+  method_data <- subset(data, Method == method)
+  p <- ggplot(method_data, aes(x = Metric, y = Value, fill = Imputation)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.88)) +
+    scale_y_continuous(limits = c(0, 1.00), breaks = seq(0, 1, 0.25)) +
+    scale_fill_manual(values = c("DA method" = "lightblue",
+                                 "mbImpute + DA method" = "dodgerblue",
+                                 "TphPMF + DA method" = "steelblue",
+                                 "mbDenoise + DA method" = "darkblue")) +
+    ggtitle(method) +
+    theme_minimal() +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(color = "black"),
+      plot.title = element_text(hjust = 0.5, size = 18),
+      axis.text = element_text(size = 16),
+      axis.text.y = element_text(size = 18), 
+      axis.title = element_text(size = 18),
+      legend.position = "bottom",
+      legend.text = element_text(size = 8),
+      legend.title = element_text(size = 10)
+    ) +
+    labs(x = "", y = "", fill = "Imputation Method")
+  print(p)
+}
 
-ggplot(results_df, aes(x = Metric, y = Value, fill = Imputation)) +
-  geom_bar(stat = "identity", position = position_dodge(width = 0.8)) +
-  facet_wrap(~ Method, scales = "free_y") +
-  scale_fill_manual(values = c("DA method" = "blue", "mbImpute + DA method" = "red", "TphPMF + DA method" = "green")) +
-  labs(x = "", y = "Scores") +  
-  theme_minimal() +
-  theme(legend.position = "bottom") +
-  guides(fill = guide_legend(title = NULL))  
-results_df <- data.frame(
-  Method = rep(c("Wilcoxon", "ANCOM", "metagenomeSeq", "DESeq2-phyloseq", "Omnibus"), each = 9),
-  Metric = rep(c("Precision", "Recall", "F1_Score"), times = 5*3),
-  Value = values,
-  Imputation = rep(c("DA method", "mbImpute + DA method", "TphPMF + DA method"), times = 15)
-)
-
-
-
-
-ggplot(results_df, aes(x = interaction(Metric, Imputation), y = Value, fill = Imputation)) +
-  geom_bar(stat = "identity", position = position_dodge(width = 0.1)) +
-  facet_wrap(~ Method, scales = "free_y") +
-  scale_fill_brewer(palette = "Set1") +
-  labs(x = "", y = "") +  
-  ylim(0, 1.00) + 
-  theme_minimal() +
-  theme(
-    legend.position = "bottom",
-  )
+dev.off()
 
 
