@@ -1251,9 +1251,15 @@ run_simulation <- function(benchmark_truth, sequencing_depth, meta_data_16S, dat
   data <- read.table("/Users/hanxinyu/Desktop/sim5_BHPMF_10000/mean_gap_filled.txt", header = TRUE, sep = "\t")
   bhmpf_pre <- as.matrix(data)
   imputed_mat<-t(bhmpf_pre)
-  BHPMF_mse <- sum( (imputed_mat  - simulated_truth_processed)^2 ) / (dim(simulated_ZI_data)[1] * dim(simulated_ZI_data)[2])
+  TphPMF_mse <- sum( (imputed_mat  - simulated_truth_processed)^2 ) / (dim(simulated_ZI_data)[1] * dim(simulated_ZI_data)[2])
   
-  return(c(mse_ori, mse_imputed, mse_benchmark_ori, mse_benchmark_imp,  Saver_mse, scImpute_mse, ALRA_mse, softImpute_mse,BHPMF_mse))
+  # Run mbDenoise 
+  sim_tab_zi_matrix <- as.matrix(simulated_ZI_data)
+  result <- ZIPPCApn(sim_tab_zi_matrix , family = "negative.binomial", n.factors = 2, rank = TRUE)
+  mbDenoise_imputed <- result$muz
+  mbDenoise_mse <- sum((mbDenoise_imputed - simulated_truth_processed)^2) / (dim(simulated_ZI_data)[1] * dim(simulated_ZI_data)[2])
+  
+  return(c(mse_ori, mse_imputed, mse_benchmark_ori, mse_benchmark_imp,  Saver_mse, scImpute_mse, ALRA_mse, softImpute_mse,TphPMF_mse, mbDenoise_mse))
 }
 
 
@@ -1293,27 +1299,58 @@ for(i in 1:5){
 print(MSE_rec_10000)
 
 
-df <- cbind( c( mean(MSE_rec_10000[,1]), mean(MSE_rec_10000[,2]), mean(MSE_rec_10000[,5]), mean(MSE_rec_10000[,6]), mean(MSE_rec_10000[,7]), mean(MSE_rec_10000[,8]), mean(MSE_rec_10000[,9]), mean(MSE_rec_5000[,1]), mean(MSE_rec_5000[,2]), mean(MSE_rec_5000[,5]), mean(MSE_rec_5000[,6]), mean(MSE_rec_5000[,7]), mean(MSE_rec_5000[,8]), mean(MSE_rec_5000[,9]), mean(MSE_rec_2000[,1]), mean(MSE_rec_2000[,2]), mean(MSE_rec_2000[,5]), mean(MSE_rec_2000[,6]), mean(MSE_rec_2000[,7]), mean(MSE_rec_2000[,8]), mean(MSE_rec_2000[,9]), mean(MSE_rec_1000[,1]), mean(MSE_rec_1000[,2]), mean(MSE_rec_1000[,5]), mean(MSE_rec_1000[,6]), mean(MSE_rec_1000[,7]), mean(MSE_rec_1000[,8]), mean(MSE_rec_1000[,9])),
-             c( sd(MSE_rec_10000[,1]), sd(MSE_rec_10000[,2]), sd(MSE_rec_10000[,5]), sd(MSE_rec_10000[,6]), sd(MSE_rec_10000[,7]), sd(MSE_rec_10000[,8]), sd(MSE_rec_10000[,9]), sd(MSE_rec_5000[,1]), sd(MSE_rec_5000[,2]), sd(MSE_rec_5000[,5]), sd(MSE_rec_5000[,6]), sd(MSE_rec_5000[,7]), sd(MSE_rec_5000[,8]), sd(MSE_rec_5000[,9]), sd(MSE_rec_2000[,1]), sd(MSE_rec_2000[,2]), sd(MSE_rec_2000[,5]), sd(MSE_rec_2000[,6]), sd(MSE_rec_2000[,7]), sd(MSE_rec_2000[,8]), sd(MSE_rec_2000[,9]), sd(MSE_rec_1000[,1]), sd(MSE_rec_1000[,2]), sd(MSE_rec_1000[,5]), sd(MSE_rec_1000[,6]), sd(MSE_rec_1000[,7]), sd(MSE_rec_1000[,8]), sd(MSE_rec_1000[,9])),
-             
-             rep( c( "No imputation", "mbImpute",  "SAVER", "scImpute", "ALRA", "SoftImpute","TphPMF"), 4),
-             c( rep(10000, 7), rep(5000, 7), rep(2000, 7), rep(1000, 7) ) )
-colnames(df) <- c("MSE_mean", "MSE_sd", "Method", "Depth")
+df <- cbind(
+  c(
+    mean(MSE_rec_10000[,1]), mean(MSE_rec_10000[,2]), mean(MSE_rec_10000[,5]), mean(MSE_rec_10000[,6]),
+    mean(MSE_rec_10000[,7]), mean(MSE_rec_10000[,8]), mean(MSE_rec_10000[,9]), mean(MSE_rec_10000[,10]),  
+    mean(MSE_rec_5000[,1]), mean(MSE_rec_5000[,2]), mean(MSE_rec_5000[,5]), mean(MSE_rec_5000[,6]),
+    mean(MSE_rec_5000[,7]), mean(MSE_rec_5000[,8]), mean(MSE_rec_5000[,9]), mean(MSE_rec_5000[,10]), 
+    mean(MSE_rec_2000[,1]), mean(MSE_rec_2000[,2]), mean(MSE_rec_2000[,5]), mean(MSE_rec_2000[,6]),
+    mean(MSE_rec_2000[,7]), mean(MSE_rec_2000[,8]), mean(MSE_rec_2000[,9]), mean(MSE_rec_2000[,10]),  
+    mean(MSE_rec_1000[,1]), mean(MSE_rec_1000[,2]), mean(MSE_rec_1000[,5]), mean(MSE_rec_1000[,6]),
+    mean(MSE_rec_1000[,7]), mean(MSE_rec_1000[,8]), mean(MSE_rec_1000[,9]), mean(MSE_rec_1000[,10]) 
+  ),
+  
+  c(
+    sd(MSE_rec_10000[,1]), sd(MSE_rec_10000[,2]), sd(MSE_rec_10000[,5]), sd(MSE_rec_10000[,6]),
+    sd(MSE_rec_10000[,7]), sd(MSE_rec_10000[,8]), sd(MSE_rec_10000[,9]), sd(MSE_rec_10000[,10]),  
+    sd(MSE_rec_5000[,1]), sd(MSE_rec_5000[,2]), sd(MSE_rec_5000[,5]), sd(MSE_rec_5000[,6]),
+    sd(MSE_rec_5000[,7]), sd(MSE_rec_5000[,8]), sd(MSE_rec_5000[,9]), sd(MSE_rec_5000[,10]),  
+    sd(MSE_rec_2000[,1]), sd(MSE_rec_2000[,2]), sd(MSE_rec_2000[,5]), sd(MSE_rec_2000[,6]),
+    sd(MSE_rec_2000[,7]), sd(MSE_rec_2000[,8]), sd(MSE_rec_2000[,9]), sd(MSE_rec_2000[,10]),  
+    sd(MSE_rec_1000[,1]), sd(MSE_rec_1000[,2]), sd(MSE_rec_1000[,5]), sd(MSE_rec_1000[,6]),
+    sd(MSE_rec_1000[,7]), sd(MSE_rec_1000[,8]), sd(MSE_rec_1000[,9]), sd(MSE_rec_1000[,10]) 
+  ),
+  rep(c("No imputation", "mbImpute", "SAVER", "scImpute", "ALRA", "SoftImpute", "TphPMF", "mbDenoise"), 4), 
+  c(rep(10000, 8), rep(5000, 8), rep(2000, 8), rep(1000, 8)) 
+)
 
+colnames(df) <- c("MSE_mean", "MSE_sd", "Method", "Depth")
 df <- as.data.frame(df)
 df$Method <- factor(df$Method)
 df$Depth <- factor(df$Depth, levels = c("1000", "2000", "5000", "10000"))
 df$MSE_mean <- as.numeric(as.character(df$MSE_mean))
 df$MSE_sd <- as.numeric(as.character(df$MSE_sd))
 
+
+
 gp1 <- ggplot(df, aes(x = Depth, y = MSE_mean, fill = Method)) + 
   geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.7) + 
-  geom_errorbar(aes(ymin = MSE_mean - MSE_sd, ymax = MSE_mean + MSE_sd), 
+  geom_errorbar(aes(ymin = MSE_mean - MSE_sd, ymax = MSE_mean + MSE_sd),
                 position = position_dodge(width = 0.7), width = 0.25) +
   labs(x = "Sequencing Depth", y = "Mean Squared Error (MSE)", fill = "Imputation Method") +
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  scale_fill_brewer(palette = "Paired") 
-ggsave("/Users/hanxinyu/Desktop/mbimpute/sequencing_depth_adjust_Multiple_imp4_1.pdf", plot = gp1, width = 20, height = 10)
+  theme(
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1),  
+    axis.text.y = element_text(size = 18),  
+    axis.title.x = element_text(size = 18),  
+    axis.title.y = element_text(size = 18),  
+    legend.text = element_text(size = 16),   
+    legend.title = element_text(size = 16)   
+  ) +
+  scale_fill_brewer(palette = "Paired")  
+
+ggsave("/Users/hanxinyu/Desktop/mbimpute1/sequencing_depth_adjust_Multiple_imp.pdf", plot = gp1, width = 20, height = 10)
+
 
 
