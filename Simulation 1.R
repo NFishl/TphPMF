@@ -322,6 +322,11 @@ meta_data <- as.data.frame(unclass(meta_data))
 meta_data <- meta_data[,-1]
 imputed_count_mat_list <- mbImpute(condition = study_condition, otu_tab = otu_tab, metadata = meta_data, D = D)
 mbImpute_mat <- imputed_count_mat_list$imp_count_mat_lognorm
+##mbDenoise
+library(mbDenoise)
+sim_tab_zi_matrix <- as.matrix(sim_tab_zi)
+result <- ZIPPCApn(sim_tab_zi_matrix , family = "negative.binomial", n.factors = 2, rank = TRUE)
+mbDenoise_imputed <- result$muz
 ##TphPMF
 sim_tab_zi[sim_tab_zi == log10(1.01)] <- NA
 sim_tab_zi_matrix <- as.matrix(sim_tab_zi)
@@ -642,12 +647,13 @@ for(j in 1:dim(softImpute_mat_eval)[2]){
   softImpute_mat_eval[,j] <- softImpute_mat_eval[,j] * max(sim_tab_zi_mbImpute[,j]) / max(softImpute_mat_eval[,j])
 }
 sqrt(sum((y_sim_rec[,-eval_omit] - softImpute_mat_eval[,-eval_omit])^2))
-bt_mse <- matrix(ncol = 800, nrow = 7)
+bt_mse <- matrix(ncol = 800, nrow = 8)
 set.seed(1234)
 for(i in 1:800){
   bt_idx <-  sample(1:185, 185, replace = TRUE)
   bt_mse[,i] <- c(sum((y_sim_rec[,-eval_omit][,bt_idx] - bhmpf_pre_data[,-eval_omit][,bt_idx])^2),
                   sum((y_sim_rec[,-eval_omit][,bt_idx] - mbImpute_mat[,-eval_omit][,bt_idx])^2),
+                  sum((y_sim_rec[,-eval_omit][,bt_idx] - mbDenoise_imputed[,-eval_omit][,bt_idx])^2),
                   sum((y_sim_rec[,-eval_omit][,bt_idx] - scImpute_mat_eval[,-eval_omit][,bt_idx])^2),
                   sum((y_sim_rec[,-eval_omit][,bt_idx] - alra_mat_eval[,-eval_omit][,bt_idx])^2),
                   sum((y_sim_rec[,-eval_omit][,bt_idx] - saver_mat_eval[,-eval_omit][,bt_idx])^2),
@@ -657,48 +663,61 @@ for(i in 1:800){
 apply(bt_mse, 1, mean)
 mse11_vector<-apply(bt_mse, 1, mean)
 print(mse11_vector)
-apply(bt_mse, 1, sd)
-pdf("/Users/hanxinyu/Desktop/mbimpute/mse111_comparision.pdf")
-df <- data.frame(cbind(mse11_vector, c("TphPMF", "mbImpute", "scImpute", "ALRA", "SAVER", "softImpute", "No imputation")))
-colnames(df) <- c("MSE", "method")
-df$MSE <- as.numeric(as.character(df$MSE))
-df$method <- factor(df$method, levels = c("TphPMF", "mbImpute", "scImpute", "ALRA", "SAVER", "softImpute", "No imputation"))
-ggplot()+
+mse_sd <- apply(bt_mse, 1, sd)
+mse_se <- mse_sd / sqrt(800)
+df <- data.frame(
+  MSE = mse11_vector,
+  method = c("TphPMF", "mbImpute", "mbDenoise", "scImpute", "ALRA", "SAVER", "softImpute", "No imputation"),
+  SE = mse_se
+)
+df$method <- factor(df$method, levels = c("TphPMF", "mbImpute", "mbDenoise", "scImpute", "ALRA", "SAVER", "softImpute", "No imputation"))
+
+pdf("/Users/hanxinyu/Desktop/mbimpute/mse_comparision.pdf")
+ggplot(df, aes(x=method, y=MSE, fill=method)) +
+  geom_bar(stat="identity", position=position_dodge(width=0.7), width=0.9) +  
+  geom_errorbar(aes(ymin=MSE - SE, ymax=MSE + SE), width=0.2, position=position_dodge(0.7)) + 
   ylab("MSE") +
-  xlab("Imputation method")+
-  geom_bar(data = df, aes(x=method, y=MSE, fill = method), stat="identity", position=position_dodge())+
+  xlab("Imputation method") +
   ggtitle("Simulation 1") +  
-  scale_y_continuous(limits = c(0,4.5)) + 
-  scale_fill_manual("method", values = c("No imputation" = "#fb9a99", "ALRA" = "#ece2f0", "TphPMF" = "#a6cee3", "scImpute" = "#1f78b4", "SAVER" = "#b2df8a", "softImpute" = "#6A95B6", "mbImpute" = "#1D9E78")) +
+  scale_y_continuous(limits = c(0, 4.5)) +  
+  scale_fill_manual("method", values = c(
+    "No imputation" = "#fb9a99", 
+    "ALRA" = "#ece2f0", 
+    "TphPMF" = "#a6cee3", 
+    "scImpute" = "#1f78b4", 
+    "SAVER" = "#b2df8a", 
+    "softImpute" = "#6A95B6", 
+    "mbImpute" = "#1D9E78", 
+    "mbDenoise" = "#FF6347"  
+  )) +
   theme_bw() +
   theme(
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
-    legend.position = "none" , 
-    plot.title = element_text(hjust = 0.5)  
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title.x = element_text(size = 20),  
+    axis.title.y = element_text(size = 20),  
+    axis.text.x = element_text(size = 7),    
+    axis.text.y = element_text(size = 30)    
   )
+
 dev.off()
-cor <- matrix(NA, nrow = 7, ncol = dim(mbImpute_mat[,-eval_omit])[2])
-rownames(cor) <- c("TphPMF", "mbImpute", "scImpute", "ALRA", "SAVER", "softImpute", "No imputation")
+cor <- matrix(NA, nrow = 8, ncol = dim(mbImpute_mat[,-eval_omit])[2])
+rownames(cor) <- c("TphPMF", "mbImpute", "mbDenoise","scImpute", "ALRA", "SAVER", "softImpute", "No imputation")
 idx_eval <- which(!(1:193 %in% eval_omit))
 for(i in 1:dim(mbImpute_mat[,-eval_omit])[2]){
   cor[1,i] <- cor(y_sim_rec[,idx_eval[i]], bhmpf_pre_data[,idx_eval[i]])
   cor[2,i] <- cor(y_sim_rec[,idx_eval[i]], mbImpute_mat[,idx_eval[i]])
-  cor[3,i] <- cor(y_sim_rec[,idx_eval[i]], scImpute_mat_eval[,idx_eval[i]])
-  cor[4,i] <- cor(y_sim_rec[,idx_eval[i]], alra_mat_eval[,idx_eval[i]])
-  cor[5,i] <- cor(y_sim_rec[,idx_eval[i]], saver_mat_eval[,idx_eval[i]])
-  cor[6,i] <- cor(y_sim_rec[,idx_eval[i]], softImpute_mat_eval[,idx_eval[i]])
-  cor[7,i] <- cor(y_sim_rec[,idx_eval[i]], sim_tab_zi_mbImpute[,idx_eval[i]])
+  cor[3,i] <- cor(y_sim_rec[,idx_eval[i]], mbDenoise_imputed[,idx_eval[i]])
+  cor[4,i] <- cor(y_sim_rec[,idx_eval[i]], scImpute_mat_eval[,idx_eval[i]])
+  cor[5,i] <- cor(y_sim_rec[,idx_eval[i]], alra_mat_eval[,idx_eval[i]])
+  cor[6,i] <- cor(y_sim_rec[,idx_eval[i]], saver_mat_eval[,idx_eval[i]])
+  cor[7,i] <- cor(y_sim_rec[,idx_eval[i]], softImpute_mat_eval[,idx_eval[i]])
+  cor[8,i] <- cor(y_sim_rec[,idx_eval[i]], sim_tab_zi_mbImpute[,idx_eval[i]])
 }
-which(cor[3,] > 0.95)
-hist(cor[1,])
-hist(cor[2,])
-hist(cor[3,])
-hist(cor[4,])
-hist(cor[5,])
-rowMeans(cor)
 
-bt_cor <- matrix(ncol = 800, nrow = 7)
+
+bt_cor <- matrix(ncol = 800, nrow = 8)
 set.seed(1234)
 for(i in 1:800){
   bt_idx <-  sample(1:185, 185, replace = TRUE)
@@ -706,46 +725,47 @@ for(i in 1:800){
 }
 apply(bt_cor, 1, mean)
 pearson_cor_vector<-apply(bt_cor, 1, mean)
+cor_sd <- apply(bt_cor, 1, sd)
+cor_se <- cor_sd / sqrt(800)
 
-pearson_cor_vector[pearson_cor_vector < 0] <- abs(pearson_cor_vector[pearson_cor_vector < 0])
-print(pearson_cor_vector)
-apply(bt_cor, 1, sd)
-
-pdf("/Users/hanxinyu/Desktop/mbimpute/correlation111_anlaysis.pdf")
-df <- data.frame(cbind(pearson_cor_vector, c("TphPMF", "mbImpute", "scImpute", "ALRA", "SAVER", "softImpute", "No imputation")))
-colnames(df) <- c("correlation", "method")
-df$correlation <- as.numeric(as.character(df$correlation))
-df$method <- factor(df$method, levels = c("No imputation", "SAVER", "ALRA", "scImpute", "softImpute", "mbImpute","TphPMF"))
-ggplot()+
+pdf("/Users/hanxinyu/Desktop/mbimpute/correlation_anlaysis.pdf")
+df <- data.frame(
+  correlation = pearson_cor_vector,
+  method = c("TphPMF", "mbImpute", "mbDenoise", "scImpute", "ALRA", "SAVER", "softImpute", "No imputation"),
+  SE = cor_se
+)
+df$method <- factor(df$method, levels = c("TphPMF", "mbImpute", "mbDenoise", "scImpute", "ALRA", "SAVER", "softImpute", "No imputation"))
+ggplot(df, aes(x=method, y=correlation, fill=method)) +
+  geom_bar(stat="identity", position=position_dodge(width=0.7), width=0.9) +  
+  geom_errorbar(aes(ymin=correlation - SE, ymax=correlation + SE), width=0.2, position=position_dodge(0.7)) +  
   ylab("Correlation") +
-  xlab("Imputation method")+
-  ggtitle("Simulation 1") +
-  geom_bar(data = df, aes(x=method, y=correlation, fill = method), stat="identity", position=position_dodge())+
-  scale_y_continuous(limits = c(0,1)) + 
-  scale_fill_manual("method", values = c("No imputation" = "#fb9a99", "ALRA" = "#ece2f0",  "scImpute" = "#1f78b4", "SAVER" = "#b2df8a", "softImpute" = "#6A95B6", "mbImpute" = "#1D9E78", "TphPMF" = "#2B35C4")) +
-  theme_bw()  +
+  xlab("Imputation method") +
+  ggtitle("Simulation 1") +  
+  scale_y_continuous(limits = c(0, 1)) +  
+  scale_fill_manual("method", values = c(
+    "No imputation" = "#fb9a99", 
+    "ALRA" = "#ece2f0", 
+    "TphPMF" = "#a6cee3", 
+    "scImpute" = "#1f78b4", 
+    "SAVER" = "#b2df8a", 
+    "softImpute" = "#6A95B6", 
+    "mbImpute" = "#1D9E78", 
+    "mbDenoise" = "#FF6347"  
+  )) +
+  theme_bw() +
   theme(
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
-    legend.position = "none" , 
-    plot.title = element_text(hjust = 0.5)  
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title.x = element_text(size = 20),  
+    axis.title.y = element_text(size = 20), 
+    axis.text.x = element_text(size = 6),    
+    axis.text.y = element_text(size = 30)    
   )
-dev.off()
-pdf("/Users/hanxinyu/Desktop/mbimpute/mean_divide_sd_comparison111.pdf")
-par(mfrow = c(3,3))
-hist(colMeans(y_sim_rec[,-eval_omit])/apply(y_sim_rec[,-eval_omit], 2, sd), col = "#fb9a99", main = "Complete", xlab = "mean/sd")
-hist(colMeans(sim_tab_zi_mbImpute[,-eval_omit])/apply(sim_tab_zi_mbImpute[,-eval_omit], 2, sd), col = "#BC6C36", main = "No imputation", xlab = "mean/sd")
 
-plot.new()
-hist(colMeans(alra_mat_eval[,-eval_omit])/apply(alra_mat_eval[,-eval_omit], 2, sd), col = "#CE95CE", main = "ALRA", xlab = "mean/sd")
-hist(colMeans(bhmpf_pre_data[,-eval_omit])/apply(bhmpf_pre_data[,-eval_omit], 2, sd), col = "#B1CEE3", main = "TphPMF", xlab = "mean/sd")
-hist(colMeans(saver_mat_eval[,-eval_omit])/apply(saver_mat_eval[,-eval_omit], 2, sd), col = "#b2df8a", main = "SAVER", xlab = "mean/sd")
-hist(colMeans(scImpute_mat_eval[,-eval_omit])/apply(scImpute_mat_eval[,-eval_omit], 2, sd), col = "#1f78b4", main = "scImpute", xlab = "mean/sd")
-hist(colMeans(softImpute_mat_eval[,-eval_omit])/apply(softImpute_mat_eval[,-eval_omit], 2, sd), col = "#6BAED6", main = "softImpute", xlab = "mean/sd")
-hist(colMeans(mbImpute_mat[,-eval_omit])/apply(mbImpute_mat[,-eval_omit], 2, sd), col = "#36A02C", main = "mbImpute", xlab = "mean/sd")
-
-mtext("Simulation 1", outer = TRUE, cex = 1.2, line = -1.3)
 dev.off()
+                                  
+
 library(transport)
 wasserstein1d_values<-c(wasserstein1d(colMeans(y_sim_rec[,-eval_omit])/apply(y_sim_rec[,-eval_omit], 2, sd), colMeans(sim_tab_zi_mbImpute[,-eval_omit])/apply(sim_tab_zi_mbImpute[,-eval_omit], 2, sd)),
                         wasserstein1d(colMeans(y_sim_rec[,-eval_omit])/apply(y_sim_rec[,-eval_omit], 2, sd), colMeans(alra_mat_eval[,-eval_omit])/apply(alra_mat_eval[,-eval_omit], 2, sd)),
@@ -753,79 +773,68 @@ wasserstein1d_values<-c(wasserstein1d(colMeans(y_sim_rec[,-eval_omit])/apply(y_s
                         wasserstein1d(colMeans(y_sim_rec[,-eval_omit])/apply(y_sim_rec[,-eval_omit], 2, sd), colMeans(saver_mat_eval[,-eval_omit])/apply(saver_mat_eval[,-eval_omit], 2, sd)),
                         wasserstein1d(colMeans(y_sim_rec[,-eval_omit])/apply(y_sim_rec[,-eval_omit], 2, sd), colMeans(scImpute_mat_eval[,-eval_omit])/apply(scImpute_mat_eval[,-eval_omit], 2, sd)),
                         wasserstein1d(colMeans(y_sim_rec[,-eval_omit])/apply(y_sim_rec[,-eval_omit], 2, sd), colMeans(softImpute_mat_eval[,-eval_omit])/apply(softImpute_mat_eval[,-eval_omit], 2, sd)),
+                        wasserstein1d(colMeans(y_sim_rec[,-eval_omit])/apply(y_sim_rec[,-eval_omit], 2, sd), colMeans(mbDenoise_imputed[,-eval_omit])/apply(mbDenoise_imputed[,-eval_omit], 2, sd)),
                         wasserstein1d(colMeans(y_sim_rec[,-eval_omit])/apply(y_sim_rec[,-eval_omit], 2, sd), colMeans(mbImpute_mat[,-eval_omit])/apply(mbImpute_mat[,-eval_omit], 2, sd)))
 
-names(wasserstein1d_values) <- c("No imputation", "ALRA", "TphPMF", "SAVER", "scImpute", "softImpute", "mbImpute")
+names(wasserstein1d_values) <- c("No imputation", "ALRA", "TphPMF", "SAVER", "scImpute", "softImpute", "mbDenoise","mbImpute")
 result_df <- as.data.frame(t(wasserstein1d_values))
-print(result_df)
 
-pdf("/Users/hanxinyu/Desktop/mbimpute/mean_divide_sd_comparison1111.pdf")
+pdf("/Users/hanxinyu/Desktop/mbimpute/mean_divide_sd_comparison1.pdf")
 par(mfrow = c(3, 3))
+par(cex.axis = 1.5,    
+    cex.lab = 1.4,     
+    cex.main = 1.5)     
+
 add_wasserstein_value <- function(wasserstein_value, x_pos, y_pos ,col = "black") {
   text(x_pos, y_pos, labels = paste("d = ", round(wasserstein_value, 3)), col = col,
-       adj = c(1, 1), cex = 1.2, xpd = TRUE)
+       adj = c(1, 1), cex = 1.4, xpd = TRUE)
 }
 
-# Histogram for the complete data (no Wasserstein distance needed)
 hist(colMeans(y_sim_rec[,-eval_omit])/apply(y_sim_rec[,-eval_omit], 2, sd),
-     col = "#fb9a99", main = "Complete", xlab = "mean/sd")
-
-# No imputation histogram with Wasserstein distance
-hist(colMeans(sim_tab_zi_mbImpute[,-eval_omit])/apply(sim_tab_zi_mbImpute[,-eval_omit], 2, sd),
-     col = "#BC6C36", main = "No imputation", xlab = "mean/sd")
-add_wasserstein_value(wasserstein1d_values["No imputation"], x_pos = 20, y_pos = 120)
-
-# Empty plot for placeholder
-plot.new()
-
-# ALRA histogram with Wasserstein distance
-hist(colMeans(alra_mat_eval[,-eval_omit])/apply(alra_mat_eval[,-eval_omit], 2, sd),
-     col = "#CE95CE", main = "ALRA", xlab = "mean/sd")
-add_wasserstein_value(wasserstein1d_values["ALRA"], x_pos = 20, y_pos = 85)
-
-# TphPMF histogram with Wasserstein distance
+     col = "#BC6C36", main = "Complete", xlab = "mean/sd")
 hist(colMeans(bhmpf_pre_data[,-eval_omit])/apply(bhmpf_pre_data[,-eval_omit], 2, sd),
-     col = "#B1CEE3", main = "TphPMF", xlab = "mean/sd")
+     col = "#a6cee3", main = "TphPMF", xlab = "mean/sd")
 add_wasserstein_value(wasserstein1d_values["TphPMF"], x_pos = 20.975, y_pos = 80)
-
-# SAVER histogram with Wasserstein distance
-hist(colMeans(saver_mat_eval[,-eval_omit])/apply(saver_mat_eval[,-eval_omit], 2, sd),
-     col = "#b2df8a", main = "SAVER", xlab = "mean/sd")
-add_wasserstein_value(wasserstein1d_values["SAVER"], x_pos = 35, y_pos = 130)
-
-# scImpute histogram with Wasserstein distance
+hist(colMeans(mbImpute_mat[,-eval_omit])/apply(mbImpute_mat[,-eval_omit], 2, sd),
+     col = "#1D9E78", main = "mbImpute", xlab = "mean/sd")
+add_wasserstein_value(wasserstein1d_values["mbImpute"], x_pos = 200, y_pos = 130)
+hist(colMeans(mbDenoise_imputed[,-eval_omit])/apply(mbDenoise_imputed[,-eval_omit], 2, sd),
+     col = "#FF6347", main = "mbDenoise", xlab = "mean/sd")
+add_wasserstein_value(wasserstein1d_values["mbDenoise"], x_pos = 7000, y_pos = 130)
 hist(colMeans(scImpute_mat_eval[,-eval_omit])/apply(scImpute_mat_eval[,-eval_omit], 2, sd),
      col = "#1f78b4", main = "scImpute", xlab = "mean/sd")
 add_wasserstein_value(wasserstein1d_values["scImpute"], x_pos = 20, y_pos = 85)
-
-# softImpute histogram with Wasserstein distance
+hist(colMeans(alra_mat_eval[,-eval_omit])/apply(alra_mat_eval[,-eval_omit], 2, sd),
+     col = "#ece2f0", main = "ALRA", xlab = "mean/sd")
+add_wasserstein_value(wasserstein1d_values["ALRA"], x_pos = 23, y_pos = 85)
+hist(colMeans(saver_mat_eval[,-eval_omit])/apply(saver_mat_eval[,-eval_omit], 2, sd),
+     col = "#b2df8a", main = "SAVER", xlab = "mean/sd")
+add_wasserstein_value(wasserstein1d_values["SAVER"], x_pos = 35, y_pos = 130)
 hist(colMeans(softImpute_mat_eval[,-eval_omit])/apply(softImpute_mat_eval[,-eval_omit], 2, sd),
-     col = "#6BAED6", main = "softImpute", xlab = "mean/sd")
+     col = "#6A95B6", main = "softImpute", xlab = "mean/sd")
 add_wasserstein_value(wasserstein1d_values["softImpute"], x_pos = 20, y_pos = 30)
-
-# mbImpute histogram with Wasserstein distance
-hist(colMeans(mbImpute_mat[,-eval_omit])/apply(mbImpute_mat[,-eval_omit], 2, sd),
-     col = "#36A02C", main = "mbImpute", xlab = "mean/sd")
-add_wasserstein_value(wasserstein1d_values["mbImpute"], x_pos = 200, y_pos = 130)
-
-# Add an overall title
+hist(colMeans(sim_tab_zi_mbImpute[,-eval_omit])/apply(sim_tab_zi_mbImpute[,-eval_omit], 2, sd),
+     col = "#fb9a99", main = "No imputation", xlab = "mean/sd")
+add_wasserstein_value(wasserstein1d_values["No imputation"], x_pos = 21, y_pos = 120)
 mtext("Simulation 1", outer = TRUE, cex = 1.2, line = -1.3)
 
-# Close the PDF device
 dev.off()
 
+
+
+
 library(scales)
-pdf("/Users/hanxinyu/Desktop/mbimpute/mean_sd_scatter1111.pdf")
+pdf("/Users/hanxinyu/Desktop/mbimpute/mean_sd_scatter1.pdf")
 par(mfrow = c(3,3))
 plot(y = colMeans(y_sim_rec[,-eval_omit]), x = apply(y_sim_rec[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "Complete", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
-plot(y = colMeans(sim_tab_zi_mbImpute[,-eval_omit]), x = apply(sim_tab_zi_mbImpute[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "No imputation", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
-plot.new()
-plot(y = colMeans(alra_mat_eval[,-eval_omit]), x = apply(alra_mat_eval[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "ALRA", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
 plot(y = colMeans(bhmpf_pre_data[,-eval_omit]), x = apply(bhmpf_pre_data[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "TphPMF", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
-plot(y = colMeans(saver_mat_eval[,-eval_omit]), x = apply(saver_mat_eval[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "SAVER", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
-plot(y = colMeans(scImpute_mat_eval[,-eval_omit]), x = apply(scImpute_mat_eval[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "scImpute", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
-plot(y = colMeans(softImpute_mat_eval[,-eval_omit]), x = apply(softImpute_mat_eval[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "softImpute", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
 plot(y = colMeans(mbImpute_mat[,-eval_omit]), x = apply(mbImpute_mat[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "mbImpute", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
-# Add a main title across the top of all plots
+plot(y = colMeans(mbDenoise_imputed[,-eval_omit]), x = apply(mbDenoise_imputed[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "mbDenoise", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
+plot(y = colMeans(scImpute_mat_eval[,-eval_omit]), x = apply(scImpute_mat_eval[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "scImpute", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
+plot(y = colMeans(alra_mat_eval[,-eval_omit]), x = apply(alra_mat_eval[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "ALRA", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
+plot(y = colMeans(saver_mat_eval[,-eval_omit]), x = apply(saver_mat_eval[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "SAVER", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
+plot(y = colMeans(softImpute_mat_eval[,-eval_omit]), x = apply(softImpute_mat_eval[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "softImpute", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
+plot(y = colMeans(sim_tab_zi_mbImpute[,-eval_omit]), x = apply(sim_tab_zi_mbImpute[,-eval_omit], 2, sd), col = alpha("#BC6C36", 0.4), main = "No imputation", xlim = c(0, 2.5), ylim = c(0,6), ylab = "Taxon mean", xlab = "Taxon SD", cex.lab=1)
+
 mtext("Simulation 1", outer = TRUE, cex = 1.2, line = -1.3)
 dev.off()
