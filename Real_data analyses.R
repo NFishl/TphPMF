@@ -766,7 +766,6 @@ Zeller_hierarchy.info = Zeller_hierarchy.info[-zero_taxa , ]
 
 
 ###Imputation:TphPMF
-library(BHPMF)
 #Qin_imp
 dist_obj <- as.dist(Qin_D_mat)
 hc <- hclust(dist_obj, method = "complete")
@@ -1043,207 +1042,6 @@ require("parallel")
 library(bnlearn)
 
 
-
-
-##Functions
-ancom.W = function(otu_data,var_data,
-                   adjusted,repeated,
-                   main.var,adj.formula,
-                   repeat.var,long,rand.formula,
-                   multcorr,sig){
-  
-  n_otu=dim(otu_data)[2]-1
-  otu_ids=colnames(otu_data)[-1]
-  
-  if(repeated==F){
-    data_comp=data.frame(merge(otu_data,var_data,by="Sample.ID",all.y=T),row.names=NULL)
-    lapply(colnames(data_comp), FUN = function(x){
-      
-    })
-    #data_comp=data.frame(merge(otu_data,var_data[,c("Sample.ID",main.var)],by="Sample.ID",all.y=T),row.names=NULL)
-  }else if(repeated==T){
-    data_comp=data.frame(merge(otu_data,var_data,by="Sample.ID"),row.names=NULL)
-    # data_comp=data.frame(merge(otu_data,var_data[,c("Sample.ID",main.var,repeat.var)],by="Sample.ID"),row.names=NULL)
-  }
-  otu_colnames <- setdiff(colnames(otu_data), "Sample.ID")
-  var_colnames <- setdiff(colnames(var_data), "Sample.ID")
-  data_comp <- merge(otu_data, var_data, by="Sample.ID", all.y=TRUE)
-  data_comp_colnames <- c("Sample.ID", otu_colnames, var_colnames)
-  data_comp <- setNames(data_comp, data_comp_colnames)
-  base.formula = paste0("lr ~ ",main.var)
-  if(repeated==T){
-    repeat.formula = paste0(base.formula," | ", repeat.var)
-  }
-  if(adjusted==T){
-    adjusted.formula = paste0(base.formula," + ", adj.formula)
-  }
-  
-  if( adjusted == F & repeated == F ){
-    fformula  <- formula(base.formula)
-  } else if( adjusted == F & repeated == T & long == T ){
-    fformula  <- formula(base.formula)
-  }else if( adjusted == F & repeated == T & long == F ){
-    fformula  <- formula(repeat.formula)
-  }else if( adjusted == T & repeated == F  ){
-    fformula  <- formula(adjusted.formula)
-  }else if( adjusted == T & repeated == T  ){
-    fformula  <- formula(adjusted.formula)
-  }else{
-    stop("Problem with data. Dataset should contain OTU abundances, groups,
-         and optionally an ID for repeated measures.")
-  }
-  
-  
-  
-  if( repeated==FALSE & adjusted == FALSE){
-    if( length(unique(data_comp[,which(colnames(data_comp)==main.var)]))==2 ){
-      tfun <- exactRankTests::wilcox.exact
-    } else{
-      tfun <- stats::kruskal.test
-    }
-  }else if( repeated==FALSE & adjusted == TRUE){
-    tfun <- stats::aov
-  }else if( repeated== TRUE & adjusted == FALSE & long == FALSE){
-    tfun <- stats::friedman.test
-  }else if( repeated== TRUE & adjusted == FALSE & long == TRUE){
-    tfun <- nlme::lme
-  }else if( repeated== TRUE & adjusted == TRUE){
-    tfun <- nlme::lme
-  }
-  
-  logratio.mat <- matrix(NA, nrow=n_otu, ncol=n_otu)
-  
-  
-  for(ii in 1:(n_otu-1)){
-    for(jj in (ii+1):n_otu){
-      data.pair <- data_comp[,which(colnames(data_comp)%in%otu_ids[c(ii,jj)])]
-      lr <- log((1+as.numeric(data.pair[,1]))/(1+as.numeric(data.pair[,2])))
-      
-      lr_dat <- data.frame( lr=lr, data_comp,row.names=NULL )
-      
-      if(adjusted==FALSE&repeated==FALSE){  ## Wilcox, Kruskal Wallis
-        logratio.mat[ii,jj] <- tfun( formula=fformula, data = lr_dat)$p.value
-      }else if(adjusted==FALSE&repeated==TRUE&long==FALSE){ ## Friedman's
-        logratio.mat[ii,jj] <- tfun( formula=fformula, data = lr_dat)$p.value
-      }else if(adjusted==TRUE&repeated==FALSE){ ## ANOVA
-        model=tfun(formula=fformula, data = lr_dat,na.action=na.omit)
-        picker=which(gsub(" ","",row.names(summary(model)[[1]]))==main.var)
-        logratio.mat[ii,jj] <- summary(model)[[1]][["Pr(>F)"]][picker]
-      }else if(repeated==TRUE&long==TRUE){ ## GEE
-        model=tfun(fixed=fformula,data = lr_dat,
-                   random = formula(rand.formula),
-                   correlation=corAR1(),
-                   na.action=na.omit)
-        picker=which(gsub(" ","",row.names(anova(model)))==main.var)
-        logratio.mat[ii,jj] <- anova(model)[["p-value"]][picker]
-      }
-      
-    }
-  }
-  
-  ind <- lower.tri(logratio.mat)
-  logratio.mat[ind] <- t(logratio.mat)[ind]
-  
-  
-  logratio.mat[which(is.finite(logratio.mat)==FALSE)] <- 1
-  
-  mc.pval <- t(apply(logratio.mat,1,function(x){
-    s <- p.adjust(x, method = "BH")
-    return(s)
-  }))
-  
-  a <- logratio.mat[upper.tri(logratio.mat,diag=FALSE)==TRUE]
-  
-  b <- matrix(0,ncol=n_otu,nrow=n_otu)
-  b[upper.tri(b)==T] <- p.adjust(a, method = "BH")
-  diag(b)  <- NA
-  ind.1    <- lower.tri(b)
-  b[ind.1] <- t(b)[ind.1]
-  
-  #########################################
-  ### Code to extract surrogate p-value
-  surr.pval <- apply(mc.pval,1,function(x){
-    s0=quantile(x[which(as.numeric(as.character(x))<sig)],0.95)
-    # s0=max(x[which(as.numeric(as.character(x))<alpha)])
-    return(s0)
-  })
-  #########################################
-  ### Conservative
-  if(multcorr==1){
-    W <- apply(b,1,function(x){
-      subp <- length(which(x<sig))
-    })
-    ### Moderate
-  } else if(multcorr==2){
-    W <- apply(mc.pval,1,function(x){
-      subp <- length(which(x<sig))
-    })
-    ### No correction
-  } else if(multcorr==3){
-    W <- apply(logratio.mat,1,function(x){
-      subp <- length(which(x<sig))
-    })
-  }
-  
-  return(W)
-}
-
-ANCOM.main = function(OTUdat,Vardat,
-                      adjusted,repeated,
-                      main.var,adj.formula,
-                      repeat.var,longitudinal,
-                      random.formula,
-                      multcorr,sig,
-                      prev.cut){
-  
-  p.zeroes=apply(OTUdat[,-1],2,function(x){
-    s=length(which(x==0))/length(x)
-  })
-  
-  zeroes.dist=data.frame(colnames(OTUdat)[-1],p.zeroes,row.names=NULL)
-  colnames(zeroes.dist)=c("Taxon","Proportion_zero")
-  
-  zero.plot = ggplot(zeroes.dist, aes(x=Proportion_zero)) +
-    geom_histogram(binwidth=0.1,colour="black",fill="white") +
-    xlab("Proportion of zeroes") + ylab("Number of taxa") +
-    theme_bw()
-  
-  #print(zero.plot)
-  
-  OTUdat.thinned=OTUdat
-  OTUdat.thinned=OTUdat.thinned[,c(1,1+which(p.zeroes<prev.cut))]
-  
-  otu.names=colnames(OTUdat.thinned)[-1]
-  
-  W.detected   <- ancom.W(OTUdat.thinned,Vardat,
-                          adjusted,repeated,
-                          main.var,adj.formula,
-                          repeat.var,longitudinal,random.formula,
-                          multcorr,sig)
-  
-  W_stat       <- W.detected
-  
-  
-  ### Bubble plot
-  
-  W_frame = data.frame(otu.names,W_stat,row.names=NULL)
-  W_frame = W_frame[order(-W_frame$W_stat),]
-  
-  W_frame$detected_0.9=rep(FALSE,dim(W_frame)[1])
-  W_frame$detected_0.8=rep(FALSE,dim(W_frame)[1])
-  W_frame$detected_0.7=rep(FALSE,dim(W_frame)[1])
-  W_frame$detected_0.6=rep(FALSE,dim(W_frame)[1])
-  
-  W_frame$detected_0.9[which(W_frame$W_stat>0.9*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
-  W_frame$detected_0.8[which(W_frame$W_stat>0.8*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
-  W_frame$detected_0.7[which(W_frame$W_stat>0.7*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
-  W_frame$detected_0.6[which(W_frame$W_stat>0.6*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
-  
-  final_results=list(W_frame,zero.plot)
-  names(final_results)=c("W.taxa","PLot.zeroes")
-  return(final_results)
-}
-
 real_data_meta_analysis <- function(OTU_mat, condition, meta_data, p_thresh = 0.05){
   OTU_count <- floor(10^OTU_mat + 1.01)
   taxa_species <- colnames(OTU_mat) 
@@ -1256,203 +1054,78 @@ real_data_meta_analysis <- function(OTU_mat, condition, meta_data, p_thresh = 0.
   
   Wilcox_result <- list("T2D_leq_cond" = taxa_species[less_identified], "T2D_grt_cond" = taxa_species[greater_identified])
   
-  # t test
-  less_pval_t_test <- apply(OTU_mat, 2, FUN = function(x) pairwise.t.test(x, condition, alternative = "less", p.adjust.method = "none")$p.value)
-  greater_pval_t_test <- apply(OTU_mat, 2, FUN = function(x) pairwise.t.test(x, condition, alternative = "greater", p.adjust.method = "none")$p.value)
+ 
+  # ANCOM-BC2
+  library(ANCOMBC)
+  otumat <- 10^OTU_count
+  taxanames <- taxa_species
+  colnames(otumat) <- taxanames
+  otumat <-cbind(1:nrow(otumat), otumat)
+  colnames(otumat)[1] = "Sample.ID"
+  otumat <- as.data.frame(otumat)
+  rownames(otumat) <- rownames(meta_data)
+  Qin_condition <- as.factor(Qin_condition)
+  ancombc2_result <- ancombc2(
+    data = otumat,
+    taxa_are_rows = FALSE,
+    meta_data = meta_data,
+    fix_formula = "study_condition",
+    group =  "study_condition",
+    p_adj_method = "fdr",
+    prv_cut = 0.1,
+    lib_cut = 0,
+    struc_zero = FALSE,
+    neg_lb = FALSE,
+    pseudo_sens = FALSE,            
+    alpha = p_thresh,
+    global = TRUE,
+    trend = FALSE
+  )
+  ancom_bc2_p_val <- ancombc2_result$res_global$p_val
+  less_identified <- which(ancombc2_result$res$logFC < 0 & ancombc2_result$res$p_condition1 < 0.05)
+  greater_identified <- which(ancombc2_result$res$logFC > 0 & ancombc2_result$res$p_condition1 < 0.05)
+  ANCOMBC2_result <- list("T2D_leq_cond" = taxa_species[less_identified], "T2D_grt_cond" = taxa_species[greater_identified],"p_values" = ancom_bc2_p_val)
   
-  less_identified <- which(p.adjust(less_pval_t_test, method = "fdr") < p_thresh)
-  greater_identified <- which(p.adjust(greater_pval_t_test, method = "fdr") < p_thresh)
-  t_test_result <- list("T2D_leq_cond" = taxa_species[less_identified], "T2D_grt_cond" = taxa_species[greater_identified])
+  # LOCOM
+  library(LOCOM)
+  locom_result <- locom(OTU_count, condition, fdr = TRUE)
+  LOCOM_p_val <- locom_result$p.otu
+  less_identified <- which( locom_result$logFC < 0 &locom_result$p.otu < 0.05)
+  greater_identified <- which( locom_result$logFC > 0 &locom_result$p.otu < 0.05)
+  LOCOM_result <- list("T2D_leq_cond" = taxa_species[less_identified], "T2D_grt_cond" = taxa_species[greater_identified],"p_values" = LOCOM_p_val)
   
-  # ANCOM
-  Vardat <- cbind(meta_data, condition)
-  if(is.null(dim(meta_data))){
-    colnames(Vardat) <- c("feature1", "condition")
-  }else{
-    colnames(Vardat) <- c(colnames(meta_data), "condition")
-  }
-  Vardat <- cbind(1:length(condition), Vardat)
-  colnames(Vardat)[1] <- "Sample.ID"
-  OTUdat <- OTU_count
-  OTUdat <- cbind(1:length(condition), OTUdat)
-  colnames(OTUdat)[1] = "Sample.ID"
-  
+  # LinDA
+  library(LinDA)
+  Qin_condition <- as.numeric(Qin_condition)
+  Vardat <- cbind(rnorm(nrow(OTU_count), 0, 1), condition) 
+  colnames(Vardat) <- c("rand_cov", "condition")  
+  Vardat <- cbind(1:nrow(OTU_count), Vardat)  
+  colnames(Vardat)[1] <- "Sample.ID"  
+  taxanames <- unlist(lapply(1:dim(OTU_count)[2], FUN = function(x) {
+    paste("taxa", x, sep = "")
+  }))  
+  colnames(OTU_count) <- taxanames  
+  OTU_count <- cbind(1:nrow(OTU_count), OTU_count)  
+  colnames(OTU_count)[1] <- "Sample.ID" 
   Vardat <- as.data.frame(Vardat)
-  OTUdat <- as.data.frame(OTUdat)
-  
-  comparison_test=ANCOM.main(OTUdat,
-                             Vardat,
-                             adjusted=F,
-                             repeated=F,
-                             main.var="condition",
-                             adj.formula=NULL,
-                             repeat.var=NULL,
-                             multcorr=2,
-                             sig=p_thresh,
-                             prev.cut=0.90,
-                             longitudinal = F)
-  
-  ANCOM_detected <- comparison_test$W.taxa$otu.names[comparison_test$W.taxa$detected_0.6]
-  ANCOM_result <- list("T2D_leq_cond" = ANCOM_detected, "T2D_grt_cond" = ANCOM_detected)
-  
-  # ZINB
-  Vardat <- cbind(meta_data, condition)
-  if(is.null(dim(meta_data))){
-    colnames(Vardat) <- c("feature1", "condition")
-  }else{
-    colnames(Vardat) <- c(colnames(meta_data), "condition")
-  }
-  
-  OTUdat <- OTU_count
-  
-  Vardat <- as.data.frame(Vardat)
-  OTUdat <- as.data.frame(OTUdat)
-  
-  library(pscl)
-  
-  df_taxa <- c()
-  p_value_zinb <- c()
-  for(i in 1:dim(OTUdat)[2]){
-    print(i)
-   
-    out <- tryCatch({
-      sr <- summary(ml <- zeroinfl(OTUdat[,i] ~ condition, dist = "negbin"))
-    }, error = function(cond) {
-      message("error")
-      return(TRUE)
-    },
-    warning = function(cond) {
-      message("warning")
-      return(TRUE)
-    },
-    finally =  {
-      p_val = NA
-    }
-    )
-    if(!(isTRUE(out))){
-      if(sr$coefficients$count[2,1] > 0){
-        p_val <- sr$coefficients$count[2,4]
-      }else{
-        p_val <- 1
-      }
-      
-    }
-    p_value_zinb <- c(p_value_zinb, p_val)
-  }
-  p_value_zinb[is.na(p_value_zinb)] <- 1
-  p_value_zinb_greater <- p_value_zinb
-  ZINB_ident_greater <- which(p.adjust(p_value_zinb, method = "fdr") < p_thresh)
-  
-  df_taxa <- c()
-  p_value_zinb <- c()
-  for(i in 1:dim(OTUdat)[2]){
-    print(i)
-    
-    out <- tryCatch({
-      sr <- summary(ml <- zeroinfl(OTUdat[,i] ~ condition, dist = "negbin"))
-    }, error = function(cond) {
-      message("error")
-      return(TRUE)
-    },
-    warning = function(cond) {
-      message("warning")
-      return(TRUE)
-    },
-    finally =  {
-      p_val = NA
-    }
-    )
-    if(!(isTRUE(out))){
-      if(sr$coefficients$count[2,1] < 0){
-        p_val <- sr$coefficients$count[2,4]
-      }else{
-        p_val <- 1
-      }
-      
-    }
-    p_value_zinb <- c(p_value_zinb, p_val)
-  }
-  p_value_zinb_less <- p_value_zinb
-  p_value_zinb_less[is.na(p_value_zinb_less)] <- 1
-  ZINB_ident_less <- which(p.adjust(p_value_zinb, method = "fdr") < p_thresh)
-  ZINB_result <- list("T2D_leq_cond" = taxa_species[ZINB_ident_less], "T2D_grt_cond" = taxa_species[ZINB_ident_greater])
-  
-  # NB
-  library(MASS)
-  Vardat <- cbind(meta_data, condition)
-  if(is.null(dim(meta_data))){
-    colnames(Vardat) <- c("feature1", "condition")
-  }else{
-    colnames(Vardat) <- c(colnames(meta_data), "condition")
-  }
-  
-  OTUdat <- OTU_count
-  
-  Vardat <- as.data.frame(Vardat)
-  OTUdat <- as.data.frame(OTUdat)
-  df_taxa <- c()
-  p_value_nb <- c()
-  for(i in 1:dim(OTUdat)[2]){
-    print(i)
-    out <- tryCatch({
-      snb <- summary(glm.nb(OTUdat[,i] ~ condition))
-    }, error = function(cond) {
-      message("error")
-      return(TRUE)
-    },
-    warning = function(cond) {
-      message("warning")
-      return(TRUE)
-    },
-    finally =  {
-      p_val = NA
-    })
-  
-    if(!(isTRUE(out))){
-      if(snb[12]$coefficients[2,1] > 0){
-        p_val <- snb[12]$coefficients[2,4]
-      }else{
-        p_val <- 1
-      }
-    }
-    p_value_nb <- c(p_value_nb, p_val)
-  }
-  p_value_nb[is.na(p_value_nb)] <- 1
-  p_value_nb_greater <- p_value_nb
-  nb_ident_greater <- which(p.adjust(p_value_nb, method = "fdr") < p_thresh)
-  
-  df_taxa <- c()
-  p_value_nb <- c()
-  for(i in 1:dim(OTUdat)[2]){
-    print(i)
-    out <- tryCatch({
-      snb <- summary(glm.nb(OTUdat[,i] ~ condition))
-    }, error = function(cond) {
-      message("error")
-      return(TRUE)
-    },
-    warning = function(cond) {
-      message("warning")
-      return(FALSE)
-    },
-    finally =  {
-      p_val = NA
-    })
-    
-    
-    if(!(isTRUE(out))){
-      if(snb[12]$coefficients[2,1] < 0){
-        p_val <- snb[12]$coefficients[2,4]
-      }else{
-        p_val <- 1
-      }
-    }
-    p_value_nb <- c(p_value_nb, p_val)
-  }
-  p_value_nb_less <- p_value_nb
-  p_value_nb_less[is.na(p_value_nb_less)] <- 1
-  nb_ident_less <- which(p.adjust(p_value_nb, method = "fdr") < p_thresh)
-  NB_result <- list("T2D_leq_cond" = taxa_species[nb_ident_less], "T2D_grt_cond" = taxa_species[nb_ident_greater])
+  OTU_count <- as.data.frame(OTU_count)
+  otu.tab <- OTU_count[, -1]
+  otu.tab<-t(otu.tab)
+  meta <- Vardat
+  colnames(meta)[2] <- "rand_cov"  
+  colnames(meta)[3] <- "condition"  
+  linda_result <- linda(
+    otu.tab = otu.tab,        
+    meta = meta,              
+    formula = '~condition+rand_cov',  
+    alpha = 0.05,             
+    prev.cut = 0.001,           
+    lib.cut = 0.01,           
+    winsor.quan = NULL        
+  )
+  less_identified <- which(linda_result$logFC < 0 & linda_result$adj_p_val < 0.05)
+  greater_identified <- which(linda_result$logFC > 0 & linda_result$adj_p_val < 0.05)
+  LinDA_result <- list("T2D_leq_cond" = taxa_species[less_identified], "T2D_grt_cond" = taxa_species[greater_identified])
   
   # metagenomic seq
   otumat = t(OTU_count)
@@ -1478,66 +1151,18 @@ real_data_meta_analysis <- function(OTU_mat, condition, meta_data, p_thresh = 0.
   greater_identified <- which( res$log2FoldChange > 0 & p.adjust(res$pvalue, method = "fdr") < p_thresh)
   DEseq2_result <- list("T2D_leq_cond" = taxa_species[less_identified], "T2D_grt_cond" = taxa_species[greater_identified])
   
-  # Omnibus test
-  #library(mbzinb)
-  Vardat_zinb <- Vardat
-  OTUdat_zinb <- as.matrix(t(OTUdat))
-  colnames(OTUdat_zinb) <- rownames(Vardat_zinb)
-  mbzinb.dataset <-
-    function(count, sample, taxon=NULL) {
-      #Return some warnings if data type is unexpected.
-      #For now, I don't have anything to do with the taxonomy table so it doesn't matter.
-      if (!inherits(count, "matrix")) {
-        stop("Count table should have class matrix \n")
-      }
-      if (!inherits(sample, "data.frame")) {
-        stop("Sample information should have class data.frame \n")
-      }
-      #Check for null names
-      if (is.null(colnames(count))) {
-        stop("Count matrix must have column names matching sample row names \n")
-      }
-      if (is.null(rownames(sample))) {
-        stop("Sample data frame must have column names \n")
-      }
-      if (!is.null(taxon) & is.null(rownames(taxon))) {
-        stop("Taxonomy table must have row names \n")
-      }
-      #Reorder samples to match names
-      sample.match <- match(colnames(count), rownames(sample))
-      if (any(is.na(sample.match))) {
-        cat(paste(sum(is.na(sample.match)), "samples in count table trimmed due to missing sample information \n"))
-        new.count <- count[, !is.na(sample.match)]
-      } else {
-        new.count <- count
-      }
-      new.sample <- sample[colnames(new.count), , drop=FALSE]
-      #If taxonomy data supplied, reorder to match names
-      if (!is.null(taxon)) {
-        taxon.match <- match(rownames(count), rownames(taxon))
-        if (any(is.na(taxon.match))) {
-          cat(paste(sum(is.na(taxon.match)), "taxa in count table trimmed due to missing taxonomy information \n"))
-          new.count <- new.count[!is.na(taxon.match), ]
-        } else {
-          new.count <- new.count
-        }
-        new.taxon <- taxon[rownames(new.count), ]
-      } else {
-        new.taxon <- NULL
-      }
-      l <- list(count=new.count, sample=new.sample, taxon=new.taxon, filtered=FALSE)
-      class(l) <- "mbzinb"
-      return(l)
-    }
-  mbzinb_data <- mbzinb.dataset(OTUdat_zinb, Vardat_zinb)
-  mbzinb_test_result <- mbzinb.test(mbzinb_data, group = "condition")
-  less_identified <- which( res$log2FoldChange < 0 & p.adjust(mbzinb_test_result$results$PValue, method = "fdr") < p_thresh)
-  greater_identified <- which( res$log2FoldChange > 0 & p.adjust(mbzinb_test_result$results$PValue, method = "fdr") < p_thresh)
-  mbzinb_result <- list("T2D_leq_cond" = taxa_species[less_identified], "T2D_grt_cond" = taxa_species[greater_identified])
-  
-  return(result = list("Wilcox" = Wilcox_result, "t_test" = t_test_result, "ANCOM" = ANCOM_result, "ZINB" = ZINB_result, "NB" = NB_result, "metagenomicseq" = Metagenomicseq_result, "DEseq2" = DEseq2_result, "Omnibus" = mbzinb_result, "DEseq2_pval" = res$pvalue, "Omnibus_pval" = mbzinb_test_result$results$PValue))
+   return(list(
+    "Wilcox" = Wilcox_result,
+    "ANCOM_BC2" = ANCOMBC2_result,
+    "ANCOM_BC2_pval" = ancom_bc2_p_val,
+    "LOCOM" = LOCOM_result,
+    "LOCOM_pval" = LOCOM_p_val,
+    "LinDA" = LinDA_result,
+    "Metagenomicseq" = Metagenomicseq_result,
+    "DEseq2" = DEseq2_result,
+    "DEseq2_pval" = res$pvalue
+  ))
 }
-
 
 library(exactRankTests)
 library(pscl)
@@ -1585,12 +1210,12 @@ Vogtmann_Wilcox <-length(Vogtmann_raw_result$Wilcox$T2D_leq_cond)+length(Vogtman
 Yu_Wilcox <-length(Yu_raw_result$Wilcox$T2D_leq_cond)+length(Yu_raw_result$Wilcox$T2D_grt_cond)
 Zeller_Wilcox <-length(Zeller_raw_result$Wilcox$T2D_leq_cond)+length(Zeller_raw_result$Wilcox$T2D_grt_cond)
 
-Qin_ANCOM <-length(Qin_raw_result$ANCOM$T2D_leq_cond)+length(Qin_raw_result$ANCOM$T2D_grt_cond)
-Karlsson_ANCOM <-length(Karlsson_raw_result$ANCOM$T2D_leq_cond)+length(Karlsson_raw_result$ANCOM$T2D_grt_cond)
-Feng_ANCOM <-length(Feng_raw_result$ANCOM$T2D_leq_cond)+length(Feng_raw_result$ANCOM$T2D_grt_cond)
-Vogtmann_ANCOM <-length(Vogtmann_raw_result$ANCOM$T2D_leq_cond)+length(Vogtmann_raw_result$ANCOM$T2D_grt_cond)
-Yu_ANCOM <-length(Yu_raw_result$ANCOM$T2D_leq_cond)+length(Yu_raw_result$ANCOM$T2D_grt_cond)
-Zeller_ANCOM <-length(Zeller_raw_result$ANCOM$T2D_leq_cond)+length(Zeller_raw_result$ANCOM$T2D_grt_cond)
+Qin_ANCOM_BC2 <-length(Qin_raw_result$ANCOM_BC2$T2D_leq_cond)+length(Qin_raw_result$ANCOM_BC2$T2D_grt_cond)
+Karlsson_ANCOM_BC2 <-length(Karlsson_raw_result$ANCOM_BC2$T2D_leq_cond)+length(Karlsson_raw_result$ANCOM_BC2$T2D_grt_cond)
+Feng_ANCOM_BC2 <-length(Feng_raw_result$ANCOM_BC2$T2D_leq_cond)+length(Feng_raw_result$ANCOM_BC2$T2D_grt_cond)
+Vogtmann_ANCOM_BC2 <-length(Vogtmann_raw_result$ANCOM_BC2$T2D_leq_cond)+length(Vogtmann_raw_result$ANCOM_BC2$T2D_grt_cond)
+Yu_ANCOM_BC2 <-length(Yu_raw_result$ANCOM_BC2$T2D_leq_cond)+length(Yu_raw_result$ANCOM_BC2$T2D_grt_cond)
+Zeller_ANCOM_BC2 <-length(Zeller_raw_result$ANCOM_BC2$T2D_leq_cond)+length(Zeller_raw_result$ANCOM_BC2$T2D_grt_cond)
 
 Qin_metagenomicseq <-length(Qin_raw_result$metagenomicseq$T2D_leq_cond)+length(Qin_raw_result$metagenomicseq$T2D_grt_cond)
 Karlsson_metagenomicseq <-length(Karlsson_raw_result$metagenomicseq$T2D_leq_cond)+length(Karlsson_raw_result$metagenomicseq$T2D_grt_cond)
@@ -1607,20 +1232,28 @@ Vogtmann_DEseq2 <-length(Vogtmann_raw_result$DEseq2$T2D_leq_cond)+length(Vogtman
 Yu_DEseq2 <-length(Yu_raw_result$DEseq2$T2D_leq_cond)+length(Yu_raw_result$DEseq2$T2D_grt_cond)
 Zeller_DEseq2 <-length(Zeller_raw_result$DEseq2$T2D_leq_cond)+length(Zeller_raw_result$DEseq2$T2D_grt_cond)
 
-Qin_Omnibus <-length(Qin_raw_result$Omnibus$T2D_leq_cond)+length(Qin_raw_result$Omnibus$T2D_grt_cond)
-Karlsson_Omnibus <-length(Karlsson_raw_result$Omnibus$T2D_leq_cond)+length(Karlsson_raw_result$Omnibus$T2D_grt_cond)
-Feng_Omnibus <-length(Feng_raw_result$Omnibus$T2D_leq_cond)+length(Feng_raw_result$Omnibus$T2D_grt_cond)
-Vogtmann_Omnibus <-length(Vogtmann_raw_result$Omnibus$T2D_leq_cond)+length(Vogtmann_raw_result$Omnibus$T2D_grt_cond)
-Yu_Omnibus <-length(Yu_raw_result$Omnibus$T2D_leq_cond)+length(Yu_raw_result$Omnibus$T2D_grt_cond)
-Zeller_Omnibus <-length(Zeller_raw_result$Omnibus$T2D_leq_cond)+length(Zeller_raw_result$Omnibus$T2D_grt_cond)
+Qin_LOCOM <-length(Qin_raw_result$LOCOM$T2D_leq_cond)+length(Qin_raw_result$LOCOM$T2D_grt_cond)
+Karlsson_LOCOM <-length(Karlsson_raw_result$LOCOM$T2D_leq_cond)+length(Karlsson_raw_result$LOCOM$T2D_grt_cond)
+Feng_LOCOM <-length(Feng_raw_result$LOCOM$T2D_leq_cond)+length(Feng_raw_result$LOCOM$T2D_grt_cond)
+Vogtmann_LOCOM <-length(Vogtmann_raw_result$LOCOM$T2D_leq_cond)+length(Vogtmann_raw_result$LOCOM$T2D_grt_cond)
+Yu_LOCOM <-length(Yu_raw_result$LOCOM$T2D_leq_cond)+length(Yu_raw_result$LOCOM$T2D_grt_cond)
+Zeller_LOCOM <-length(Zeller_raw_result$LOCOM$T2D_leq_cond)+length(Zeller_raw_result$LOCOM$T2D_grt_cond)
 
-results_table <- data.frame(
-  Wilcoxon = c(Qin_Wilcox,Karlsson_Wilcox,Feng_Wilcox,Vogtmann_Wilcox,Yu_Wilcox,Zeller_Wilcox), 
-  ANCOM = c(Qin_ANCOM,Karlsson_ANCOM,Feng_ANCOM,Vogtmann_ANCOM,Yu_ANCOM,Zeller_ANCOM),
-  MetagenomeSeq = c(Qin_metagenomicseq,Karlsson_metagenomicseq,Feng_metagenomicseq,Vogtmann_metagenomicseq,Yu_metagenomicseq,Zeller_metagenomicseq),
-  DESeq2_phyloseq = c(Qin_DEseq2,Karlsson_DEseq2,Feng_DEseq2,Vogtmann_DEseq2,Yu_DEseq2,Zeller_DEseq2),
-  Omnibust_test = c(Qin_Omnibus,Karlsson_Omnibus,Feng_Omnibus,Vogtmann_Omnibus,Yu_Omnibus,Zeller_Omnibus)
+Qin_LinDA <-length(Qin_raw_result$LinDA$T2D_leq_cond)+length(Qin_raw_result$LinDA$T2D_grt_cond)
+Karlsson_LinDA <-length(Karlsson_raw_result$LinDA$T2D_leq_cond)+length(Karlsson_raw_result$LinDA$T2D_grt_cond)
+Feng_LinDA <-length(Feng_raw_result$LinDA$T2D_leq_cond)+length(Feng_raw_result$LinDA$T2D_grt_cond)
+Vogtmann_LinDA <-length(Vogtmann_raw_result$LinDA$T2D_leq_cond)+length(Vogtmann_raw_result$LinDA$T2D_grt_cond)
+Yu_LinDA <-length(Yu_raw_result$LinDA$T2D_leq_cond)+length(Yu_raw_result$LinDA$T2D_grt_cond)
+Zeller_LinDA <-length(Zeller_raw_result$LinDA$T2D_leq_cond)+length(Zeller_raw_result$LinDA$T2D_grt_cond)
+
   
+results_table <- data.frame(
+  Wilcoxon = c(Qin_Wilcox, Karlsson_Wilcox, Feng_Wilcox, Vogtmann_Wilcox, Yu_Wilcox, Zeller_Wilcox),
+  ANCOM_BC2 = c(Qin_ANCOM_BC2, Karlsson_ANCOM_BC2, Feng_ANCOM_BC2, Vogtmann_ANCOM_BC2, Yu_ANCOM_BC2, Zeller_ANCOM_BC2),
+  MetagenomeSeq = c(Qin_metagenomicseq, Karlsson_metagenomicseq, Feng_metagenomicseq, Vogtmann_metagenomicseq, Yu_metagenomicseq, Zeller_metagenomicseq),
+  DESeq2_phyloseq = c(Qin_DEseq2, Karlsson_DEseq2, Feng_DEseq2, Vogtmann_DEseq2, Yu_DEseq2, Zeller_DEseq2),
+  LOCOM = c(Qin_LOCOM, Karlsson_LOCOM, Feng_LOCOM, Vogtmann_LOCOM, Yu_LOCOM, Zeller_LOCOM),
+  LinDA = c(Qin_LinDA, Karlsson_LinDA, Feng_LinDA, Vogtmann_LinDA, Yu_LinDA, Zeller_LinDA)
 )
 
 rownames(results_table) <- c("Qin et al.", "Karlsson et al.", "Feng et al.", "Vogtmann et al.", "Yu et al.", "Zeller et al.")
@@ -1634,12 +1267,12 @@ Vogtmann_Wilcox <-length(Vogtmann_imp_result$Wilcox$T2D_leq_cond)+length(Vogtman
 Yu_Wilcox <-length(Yu_imp_result$Wilcox$T2D_leq_cond)+length(Yu_imp_result$Wilcox$T2D_grt_cond)
 Zeller_Wilcox <-length(Zeller_imp_result$Wilcox$T2D_leq_cond)+length(Zeller_imp_result$Wilcox$T2D_grt_cond)
 
-Qin_ANCOM <-length(Qin_imp_result$ANCOM$T2D_leq_cond)+length(Qin_imp_result$ANCOM$T2D_grt_cond)
-Karlsson_ANCOM <-length(Karlsson_imp_result$ANCOM$T2D_leq_cond)+length(Karlsson_imp_result$ANCOM$T2D_grt_cond)
-Feng_ANCOM <-length(Feng_imp_result$ANCOM$T2D_leq_cond)+length(Feng_imp_result$ANCOM$T2D_grt_cond)
-Vogtmann_ANCOM <-length(Vogtmann_imp_result$ANCOM$T2D_leq_cond)+length(Vogtmann_imp_result$ANCOM$T2D_grt_cond)
-Yu_ANCOM <-length(Yu_imp_result$ANCOM$T2D_leq_cond)+length(Yu_imp_result$ANCOM$T2D_grt_cond)
-Zeller_ANCOM <-length(Zeller_imp_result$ANCOM$T2D_leq_cond)+length(Zeller_imp_result$ANCOM$T2D_grt_cond)
+Qin_ANCOM_BC2 <-length(Qin_imp_result$ANCOM_BC2$T2D_leq_cond)+length(Qin_imp_result$ANCOM_BC2$T2D_grt_cond)
+Karlsson_ANCOM_BC2 <-length(Karlsson_imp_result$ANCOM_BC2$T2D_leq_cond)+length(Karlsson_imp_result$ANCOM_BC2$T2D_grt_cond)
+Feng_ANCOM_BC2 <-length(Feng_imp_result$ANCOM_BC2$T2D_leq_cond)+length(Feng_imp_result$ANCOM_BC2$T2D_grt_cond)
+Vogtmann_ANCOM_BC2 <-length(Vogtmann_imp_result$ANCOM_BC2$T2D_leq_cond)+length(Vogtmann_imp_result$ANCOM_BC2$T2D_grt_cond)
+Yu_ANCOM_BC2 <-length(Yu_imp_result$ANCOM_BC2$T2D_leq_cond)+length(Yu_imp_result$ANCOM_BC2$T2D_grt_cond)
+Zeller_ANCOM_BC2 <-length(Zeller_imp_result$ANCOM_BC2$T2D_leq_cond)+length(Zeller_imp_result$ANCOM_BC2$T2D_grt_cond)
 
 Qin_metagenomicseq <-length(Qin_imp_result$metagenomicseq$T2D_leq_cond)+length(Qin_imp_result$metagenomicseq$T2D_grt_cond)
 Karlsson_metagenomicseq <-length(Karlsson_imp_result$metagenomicseq$T2D_leq_cond)+length(Karlsson_imp_result$metagenomicseq$T2D_grt_cond)
@@ -1656,21 +1289,29 @@ Vogtmann_DEseq2 <-length(Vogtmann_imp_result$DEseq2$T2D_leq_cond)+length(Vogtman
 Yu_DEseq2 <-length(Yu_imp_result$DEseq2$T2D_leq_cond)+length(Yu_imp_result$DEseq2$T2D_grt_cond)
 Zeller_DEseq2 <-length(Zeller_imp_result$DEseq2$T2D_leq_cond)+length(Zeller_imp_result$DEseq2$T2D_grt_cond)
 
-Qin_Omnibus <-length(Qin_imp_result$Omnibus$T2D_leq_cond)+length(Qin_imp_result$Omnibus$T2D_grt_cond)
-Karlsson_Omnibus <-length(Karlsson_imp_result$Omnibus$T2D_leq_cond)+length(Karlsson_imp_result$Omnibus$T2D_grt_cond)
-Feng_Omnibus <-length(Feng_imp_result$Omnibus$T2D_leq_cond)+length(Feng_imp_result$Omnibus$T2D_grt_cond)
-Vogtmann_Omnibus <-length(Vogtmann_imp_result$Omnibus$T2D_leq_cond)+length(Vogtmann_imp_result$Omnibus$T2D_grt_cond)
-Yu_Omnibus <-length(Yu_imp_result$Omnibus$T2D_leq_cond)+length(Yu_imp_result$Omnibus$T2D_grt_cond)
-Zeller_Omnibus <-length(Zeller_imp_result$Omnibus$T2D_leq_cond)+length(Zeller_imp_result$Omnibus$T2D_grt_cond)
+Qin_LOCOM <-length(Qin_imp_result$LOCOM$T2D_leq_cond)+length(Qin_imp_result$LOCOM$T2D_grt_cond)
+Karlsson_LOCOM <-length(Karlsson_imp_result$LOCOM$T2D_leq_cond)+length(Karlsson_imp_result$LOCOM$T2D_grt_cond)
+Feng_LOCOM <-length(Feng_imp_result$LOCOM$T2D_leq_cond)+length(Feng_imp_result$LOCOM$T2D_grt_cond)
+Vogtmann_LOCOM <-length(Vogtmann_imp_result$LOCOM$T2D_leq_cond)+length(Vogtmann_imp_result$LOCOM$T2D_grt_cond)
+Yu_LOCOM <-length(Yu_imp_result$LOCOM$T2D_leq_cond)+length(Yu_imp_result$LOCOM$T2D_grt_cond)
+Zeller_LOCOM <-length(Zeller_imp_result$LOCOM$T2D_leq_cond)+length(Zeller_imp_result$LOCOM$T2D_grt_cond)
+
+Qin_LinDA <-length(Qin_imp_result$LinDA$T2D_leq_cond)+length(Qin_imp_result$LinDA$T2D_grt_cond)
+Karlsson_LinDA <-length(Karlsson_imp_result$LinDA$T2D_leq_cond)+length(Karlsson_imp_result$LinDA$T2D_grt_cond)
+Feng_LinDA <-length(Feng_imp_result$LinDA$T2D_leq_cond)+length(Feng_imp_result$LinDA$T2D_grt_cond)
+Vogtmann_LinDA <-length(Vogtmann_imp_result$LinDA$T2D_leq_cond)+length(Vogtmann_imp_result$LinDA$T2D_grt_cond)
+Yu_LinDA <-length(Yu_imp_result$LinDA$T2D_leq_cond)+length(Yu_imp_result$LinDA$T2D_grt_cond)
+Zeller_LinDA <-length(Zeller_imp_result$LinDA$T2D_leq_cond)+length(Zeller_imp_result$LinDA$T2D_grt_cond)
 
 results_table_imp <- data.frame(
-  Wilcoxon = c(Qin_Wilcox,Karlsson_Wilcox,Feng_Wilcox,Vogtmann_Wilcox,Yu_Wilcox,Zeller_Wilcox), 
-  ANCOM = c(Qin_ANCOM,Karlsson_ANCOM,Feng_ANCOM,Vogtmann_ANCOM,Yu_ANCOM,Zeller_ANCOM),
-  MetagenomeSeq = c(Qin_metagenomicseq,Karlsson_metagenomicseq,Feng_metagenomicseq,Vogtmann_metagenomicseq,Yu_metagenomicseq,Zeller_metagenomicseq),
-  DESeq2_phyloseq = c(Qin_DEseq2,Karlsson_DEseq2,Feng_DEseq2,Vogtmann_DEseq2,Yu_DEseq2,Zeller_DEseq2),
-  Omnibust_test = c(Qin_Omnibus,Karlsson_Omnibus,Feng_Omnibus,Vogtmann_Omnibus,Yu_Omnibus,Zeller_Omnibus)
-  
+  Wilcoxon = c(Qin_Wilcox, Karlsson_Wilcox, Feng_Wilcox, Vogtmann_Wilcox, Yu_Wilcox, Zeller_Wilcox),
+  ANCOM_BC2 = c(Qin_ANCOM_BC2, Karlsson_ANCOM_BC2, Feng_ANCOM_BC2, Vogtmann_ANCOM_BC2, Yu_ANCOM_BC2, Zeller_ANCOM_BC2),
+  MetagenomeSeq = c(Qin_metagenomicseq, Karlsson_metagenomicseq, Feng_metagenomicseq, Vogtmann_metagenomicseq, Yu_metagenomicseq, Zeller_metagenomicseq),
+  DESeq2_phyloseq = c(Qin_DEseq2, Karlsson_DEseq2, Feng_DEseq2, Vogtmann_DEseq2, Yu_DEseq2, Zeller_DEseq2),
+  LOCOM = c(Qin_LOCOM, Karlsson_LOCOM, Feng_LOCOM, Vogtmann_LOCOM, Yu_LOCOM, Zeller_LOCOM),
+  LinDA = c(Qin_LinDA, Karlsson_LinDA, Feng_LinDA, Vogtmann_LinDA, Yu_LinDA, Zeller_LinDA)
 )
+
 
 rownames(results_table_imp) <- c("Qin et al.", "Karlsson et al.", "Feng et al.", "Vogtmann et al.", "Yu et al.", "Zeller et al.")
 print(results_table_imp)
@@ -1814,61 +1455,13 @@ classification_results <- function(input_data, condition){
 }
 
 
-matrix_ori <- as.matrix(Zeller_raw)
-features_imputed <- Zeller_imp_result
-imputed_results <- matrix(nrow = 8, ncol = 12)
-for(i in 1:8){
-  print(i)
-  combined_conds <- union(features_imputed[[i]]$T2D_leq_cond, features_imputed[[i]]$T2D_grt_cond)
-  print(length(combined_conds))
-  if(length(combined_conds) > 1){
-    overlap_taxa <- intersect(combined_conds, colnames(matrix_ori))
-    print(length(overlap_taxa))
-    if(length(overlap_taxa) != 0){
-      input_data <- as.matrix(matrix_ori[,overlap_taxa])
-      imputed_results[i,] <- unlist(classification_results(input_data = as.matrix(Zeller_raw), condition = Zeller_condition))}}}
-
-
-
-full_data_result <- classification_results(input_data = as.matrix(Zeller_data), condition = condition)
-classification_archive <- function(input_data, condition, features_raw, features_imputed){
-  set.seed(2020)
-  matrix_ori <- as.matrix(input_data)
-  full_data_result <- classification_results(input_data = matrix_ori, condition = condition)
-  raw_results <- matrix(nrow = 7, ncol = 12)
-  for(i in 1:length(features_raw)){
-    print(i)
-    if(length(union(features_raw[[i]]$T2D_leq_cond, features_raw[[i]]$T2D_grt_cond)) != 0){
-      input_data <- as.matrix(matrix_ori[,union(features_raw[[i]]$T2D_leq_cond, features_raw[[i]]$T2D_grt_cond)])
-      raw_results[i,] <- unlist(classification_results(input_data = input_data, condition = condition))
-    }else{
-    }
-  }
-  rownames(raw_results) <- c("Wilcox", "t_test", "ANCOM", "ZINB", "NB", "Metaseq", "DEseq2")
-  colnames(raw_results) <- c("logistic_reg.prauc", "logistic_reg.rocauc", "elastic_net.prauc", "elastic_net.rocauc", "random_forest.prauc", "random_forest.rocauc", "xgboost.prauc", "xgboost.rocauc", "svm.lr.prauc", "svm.lr.rocauc", "svm.guass.prauc", "svm.guass.rocauc")
-  
-  imputed_results <- matrix(nrow = 7, ncol = 12)
-  for(i in 1:length(features_imputed)){
-    print(i)
-    if(length(union(features_imputed[[i]]$T2D_leq_cond, features_imputed[[i]]$T2D_grt_cond)) != 0){
-      input_data <- as.matrix(matrix_ori[,union(features_imputed[[i]]$T2D_leq_cond, features_imputed[[i]]$T2D_grt_cond)])
-      imputed_results[i,] <- unlist(classification_results(input_data = input_data, condition = condition))
-    }else{
-    }
-  }
-  rownames(imputed_results) <- c("Wilcox", "t_test", "ANCOM", "ZINB", "NB", "Metaseq", "DEseq2")
-  colnames(imputed_results) <- c("logistic_reg.prauc", "logistic_reg.rocauc", "elastic_net.prauc", "elastic_net.rocauc", "random_forest.prauc", "random_forest.rocauc", "xgboost.prauc", "xgboost.rocauc", "svm.lr.prauc", "svm.lr.rocauc", "svm.guass.prauc", "svm.guass.rocauc")
-  
-  # rbind(unlist(full_data_result), raw_results, imputed_results)
-  return(list("full_data_result" = unlist(full_data_result), "raw_result" = raw_results, "imputed_result" = imputed_results))
-}
 
 classification <- function(input_data, condition, features_raw, features_imputed){
-  set.seed(2020)
+  set.seed(2024)
   matrix_ori <- as.matrix(input_data)
   full_data_result <- classification_results(input_data = matrix_ori, condition = condition)
-  raw_results <- matrix(nrow = 8, ncol = 12)
-  for(i in 1:8){
+  raw_results <- matrix(nrow = 6, ncol = 12)
+  for(i in 1:6){
     print(i)
     if(length(union(features_raw[[i]]$T2D_leq_cond, features_raw[[i]]$T2D_grt_cond)) > 1){
       overlap_taxa <- intersect(union(features_raw[[i]]$T2D_leq_cond, features_raw[[i]]$T2D_grt_cond), colnames(matrix_ori))
@@ -1879,11 +1472,11 @@ classification <- function(input_data, condition, features_raw, features_imputed
     }else{
     }
   }
-  rownames(raw_results) <- c("Wilcox", "t_test", "ANCOM", "ZINB", "NB", "Metaseq", "DEseq2", "Omnibus")
+  rownames(raw_results) <- c("Wilcox", "ANCOM-BC2", "LOCOM", "LinDA", "Metaseq", "DEseq2")
   colnames(raw_results) <- c("logistic_reg.prauc", "logistic_reg.rocauc", "elastic_net.prauc", "elastic_net.rocauc", "random_forest.prauc", "random_forest.rocauc", "xgboost.prauc", "xgboost.rocauc", "svm.lr.prauc", "svm.lr.rocauc", "svm.guass.prauc", "svm.guass.rocauc")
   
-  imputed_results <- matrix(nrow = 8, ncol = 12)
-  for(i in 1:8){
+  imputed_results <- matrix(nrow = 6, ncol = 12)
+  for(i in 1:6){
     print(i)
     if(length(union(features_imputed[[i]]$T2D_leq_cond, features_imputed[[i]]$T2D_grt_cond)) > 1){
       overlap_taxa <- intersect(union(features_imputed[[i]]$T2D_leq_cond, features_imputed[[i]]$T2D_grt_cond), colnames(matrix_ori))
@@ -1900,12 +1493,13 @@ classification <- function(input_data, condition, features_raw, features_imputed
     }else{
     }
   }
-  rownames(imputed_results) <- c("Wilcox", "t_test", "ANCOM", "ZINB", "NB", "Metaseq", "DEseq2", "Omnibus")
+  rownames(imputed_results) <- c("Wilcox", "ANCOM-BC2", "LOCOM", "LinDA", "Metaseq", "DEseq2")
   colnames(imputed_results) <- c("logistic_reg.prauc", "logistic_reg.rocauc", "elastic_net.prauc", "elastic_net.rocauc", "random_forest.prauc", "random_forest.rocauc", "xgboost.prauc", "xgboost.rocauc", "svm.lr.prauc", "svm.lr.rocauc", "svm.guass.prauc", "svm.guass.rocauc")
   
   # rbind(unlist(full_data_result), raw_results, imputed_results)
   return(list("full_data_result" = unlist(full_data_result), "raw_result" = raw_results, "imputed_result" = imputed_results))
 }
+
 
 
 Zeller_condition[Zeller_condition == "control"]=0
@@ -1938,54 +1532,60 @@ Qin_condition[Qin_condition == "T2D"]=1
 Qin_condition <- as.numeric(Qin_condition)
 Qin_result <- classification(input_data = as.matrix(Qin_raw), condition = Qin_condition, features_raw = Qin_raw_result, features_imputed = Qin_imp_result)
 
+                                 
+pdf("/Users/hanxinyu/Desktop/mbimpute1/real_data_analysis/Real_data_p_value_ANCOM_BC2_distribution_combined_1.pdf", width = 20, height = 14)
+par(mfrow = c(2, 3), mar = c(5.3, 6.5, 2.5, 1), mgp = c(4.2, 1.5, 0))
 
+hist(Qin_raw_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Qin_Raw", xlab = "P-value")
+hist(Karlsson_raw_result$ANCOM_BC2_pval, ylim = c(0, 100),cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Karlsson_Raw", xlab = "P-value")
+hist(Feng_raw_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Feng_Raw", xlab = "P-value")
+hist(Qin_imp_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Qin_Imp", xlab = "P-value")
+hist(Karlsson_imp_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Karlsson_Imp", xlab = "P-value")
+hist(Feng_imp_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Feng_Imp", xlab = "P-value")
 
-###DESeq2与Omnibus的p值分布图
-png("Real data p value of DESeq2 distribution/Qin_raw.png", width = 480, height = 350)
-hist(Qin_raw_result$DEseq2_pval, ylim = c(0, 90), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
 dev.off()
-png("Real data p value of DESeq2 distribution/Qin_imp.png", width = 480, height = 350)
-hist(Qin_imp_result$DEseq2_pval, ylim = c(0, 90), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of DESeq2 distribution/Karlsson_raw.png", width = 480, height = 350)
-hist(Karlsson_raw_result$DEseq2_pval, ylim = c(0, 60), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of DESeq2 distribution/Karlsson_imp.png", width = 480, height = 350)
-hist(Karlsson_imp_result$DEseq2_pval, ylim = c(0, 60), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of DESeq2 distribution/Feng_raw.png", width = 480, height = 350)
-hist(Feng_raw_result$DEseq2_pval, ylim = c(0, 90), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of DESeq2 distribution/Feng_imp.png", width = 480, height = 350)
-hist(Feng_imp_result$DEseq2_pval, ylim = c(0, 90), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("/Users/hanxinyu/Desktop/real_data_analysis/Yu/Yu_raw.png", width = 480, height = 350)
-hist(Yu_raw_result$DEseq2_pval, ylim = c(0, 120), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("/Users/hanxinyu/Desktop/real_data_analysis/Yu/Yu_imp.png", width = 480, height = 350)
-hist(Yu_imp_result$DEseq2_pval, ylim = c(0, 120), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of DESeq2 distribution/Vogtmann_raw.png", width = 480, height = 350)
-hist(Vogtmann_raw_result$DEseq2_pval, ylim = c(0, 90), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of DESeq2 distribution/Vogtmann_imp.png", width = 480, height = 350)
-hist(Vogtmann_imp_result$DEseq2_pval, ylim = c(0, 90), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of DESeq2 distribution/Zeller_raw.png", width = 480, height = 350)
-hist(Zeller_raw_result$DEseq2_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of DESeq2 distribution/Zeller_imp.png", width = 480, height = 350)
-hist(Zeller_imp_result$DEseq2_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
+
+pdf("/Users/hanxinyu/Desktop/mbimpute1/real_data_analysis/Real_data_p_value_ANCOM_BC2_distribution_combined_2.pdf", width = 20, height = 14)
+par(mfrow = c(2, 3), mar = c(5.3, 6.5, 2.5, 1), mgp = c(4.2, 1.5, 0))
+                                 
+hist(Yu_raw_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Yu_Raw", xlab = "P-value")
+hist(Vogtmann_raw_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Vogtmann_Raw", xlab = "P-value")
+hist(Zeller_raw_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Zeller_Raw", xlab = "P-value")
+hist(Yu_imp_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Yu_Imp", xlab = "P-value")
+hist(Vogtmann_imp_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Vogtmann_Imp", xlab = "P-value")
+hist(Zeller_imp_result$ANCOM_BC2_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Zeller_Imp", xlab = "P-value")
+
 dev.off()
 
 
-# Open a PDF device with the correct filename extension and size in inches
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/Real_data_p_value_DESeq2_distribution_combined_1.pdf", width = 20, height = 14)
+pdf("/Users/hanxinyu/Desktop/mbimpute1/real_data_analysis/Real_data_p_value_LOCOM_distribution_combined_1.pdf", width = 20, height = 14)
+par(mfrow = c(2, 3), mar = c(5.3, 6.5, 2.5, 1), mgp = c(4.2, 1.5, 0))
 
-# Set up the graphic parameters for a 2x3 plot layout
+hist(Qin_raw_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Qin_Raw", xlab = "P-value")
+hist(Karlsson_raw_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Karlsson_Raw", xlab = "P-value")
+hist(Feng_raw_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Feng_Raw", xlab = "P-value")
+hist(Qin_imp_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Qin_Imp", xlab = "P-value")
+hist(Karlsson_imp_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Karlsson_Imp", xlab = "P-value")
+hist(Feng_imp_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Feng_Imp", xlab = "P-value")
+
+dev.off()
+
+pdf("/Users/hanxinyu/Desktop/mbimpute1/real_data_analysis/Real_data_p_value_LOCOM_distribution_combined_2.pdf", width = 20, height = 14)
+par(mfrow = c(2, 3), mar = c(5.3, 6.5, 2.5, 1), mgp = c(4.2, 1.5, 0))
+
+hist(Yu_raw_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3,main = "Yu_Raw", xlab = "P-value")
+hist(Vogtmann_raw_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Vogtmann_Raw", xlab = "P-value")
+hist(Zeller_raw_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Zeller_Raw", xlab = "P-value")
+hist(Yu_imp_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Yu_Imp", xlab = "P-value")
+hist(Vogtmann_imp_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Vogtmann_Imp", xlab = "P-value")
+hist(Zeller_imp_result$LOCOM_pval, ylim = c(0, 100), cex.lab = 2.9, cex.axis = 3,cex.main = 3, main = "Zeller_Imp", xlab = "P-value")
+
+dev.off()
+
+
+pdf("/Users/hanxinyu/Desktop/mbimpute1/real_data_analysis/Real_data_p_value_DESeq2_distribution_combined_1.pdf", width = 20, height = 14)
 par(mfrow = c(2, 3), mar = c(4, 4.5, 2, 1))
 
-# Create the histograms for the Qin dataset
 hist(Qin_raw_result$DEseq2_pval, ylim = c(0, 120), cex.lab = 1.5, cex.axis = 1.5, main = "Qin_Raw", xlab = "P-value")
 hist(Karlsson_raw_result$DEseq2_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis = 1.5, main = "Karlsson_Raw", xlab = "P-value")
 hist(Feng_raw_result$DEseq2_pval, ylim = c(0, 120), cex.lab = 1.5, cex.axis = 1.5, main = "Feng_Raw", xlab = "P-value")
@@ -1996,12 +1596,9 @@ hist(Feng_imp_result$DEseq2_pval, ylim = c(0, 120), cex.lab = 1.5, cex.axis = 1.
 dev.off()
 
 
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/Real_data_p_value_DESeq2_distribution_combined_2.pdf", width = 20, height = 14)
-
-# Set up the graphic parameters for a 2x3 plot layout
+pdf("/Users/hanxinyu/Desktop/mbimpute1/real_data_analysis/Real_data_p_value_DESeq2_distribution_combined_2.pdf", width = 20, height = 14)
 par(mfrow = c(2, 3), mar = c(4, 4.5, 2, 1))
 
-# Create the histograms for the Qin dataset
 hist(Yu_raw_result$DEseq2_pval, ylim = c(0, 120), cex.lab = 1.5, cex.axis=1.5, main = "Yu_Raw", xlab = "P-value")
 hist(Vogtmann_raw_result$DEseq2_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis=1.5, main = "Vogtmann_Raw", xlab = "P-value")
 hist(Zeller_raw_result$DEseq2_pval, ylim = c(0, 120), cex.lab = 1.5, cex.axis=1.5, main = "Zeller_Raw", xlab = "P-value")
@@ -2012,85 +1609,9 @@ hist(Zeller_imp_result$DEseq2_pval, ylim = c(0, 120), cex.lab = 1.5, cex.axis=1.
 dev.off()
 
 
-# Open a PDF device with the correct filename extension and size in inches
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/Real_data_p_value_Omnibus_distribution_combined_1.pdf", width = 20, height = 14)
-
-# Set up the graphic parameters for a 2x3 plot layout
-par(mfrow = c(2, 3), mar = c(4, 4.5, 2, 1))
-
-# Create the histograms for the Qin dataset
-hist(Qin_raw_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis = 1.5, main = "Qin_Raw", xlab = "P-value")
-hist(Karlsson_raw_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis = 1.5, main = "Karlsson_Raw", xlab = "P-value")
-hist(Feng_raw_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis = 1.5, main = "Feng_Raw", xlab = "P-value")
-hist(Qin_imp_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis = 1.5, main = "Qin_Imp", xlab = "P-value")
-hist(Karlsson_imp_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis = 1.5, main = "Karlsson_Imp", xlab = "P-value")
-hist(Feng_imp_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis = 1.5, main = "Feng_Imp", xlab = "P-value")
-
-dev.off()
-
-
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/Real_data_p_value_Omnibus_distribution_combined_2.pdf", width = 20, height = 14)
-
-# Set up the graphic parameters for a 2x3 plot layout
-par(mfrow = c(2, 3), mar = c(4, 4.5, 2, 1))
-
-# Create the histograms for the Qin dataset
-hist(Yu_raw_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis=1.5, main = "Yu_Raw", xlab = "P-value")
-hist(Vogtmann_raw_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis=1.5, main = "Vogtmann_Raw", xlab = "P-value")
-hist(Zeller_raw_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis=1.5, main = "Zeller_Raw", xlab = "P-value")
-hist(Yu_imp_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis=1.5, main = "Yu_Imp", xlab = "P-value")
-hist(Vogtmann_imp_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis=1.5, main = "Vogtmann_Imp", xlab = "P-value")
-hist(Zeller_imp_result$Omnibus_pval, ylim = c(0, 100), cex.lab = 1.5, cex.axis=1.5, main = "Zeller_Imp", xlab = "P-value")
-
-dev.off()
-
-
-
-
-
-png("Real data p value of Omnibus distribution/Qin_raw.png", width = 480, height = 350)
-hist(Qin_raw_result$Omnibus_pval, ylim = c(0, 60), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Qin_imp.png", width = 480, height = 350)
-hist(Qin_imp_result$Omnibus_pval, ylim = c(0, 60), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Karlsson_raw.png", width = 480, height = 350)
-hist(Karlsson_raw_result$Omnibus_pval, ylim = c(0, 40), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Karlsson_imp.png", width = 480, height = 350)
-hist(Karlsson_imp_result$Omnibus_pval, ylim = c(0, 40), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Feng_raw.png", width = 480, height = 350)
-hist(Feng_raw_result$Omnibus_pval, ylim = c(0, 70), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Feng_imp.png", width = 480, height = 350)
-hist(Feng_imp_result$Omnibus_pval, ylim = c(0, 70), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Yu_raw.png", width = 480, height = 350)
-hist(Yu_raw_result$Omnibus_pval, ylim = c(0, 70), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Yu_imp.png", width = 480, height = 350)
-hist(Yu_imp_result$Omnibus_pval, ylim = c(0, 70), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Vogtmann_raw.png", width = 480, height = 350)
-hist(Vogtmann_raw_result$Omnibus_pval, ylim = c(0, 40), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Vogtmann_imp.png", width = 480, height = 350)
-hist(Vogtmann_imp_result$Omnibus_pval, ylim = c(0, 40), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Zeller_raw.png", width = 480, height = 350)
-hist(Zeller_raw_result$Omnibus_pval, ylim = c(0, 70), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-png("Real data p value of Omnibus distribution/Zeller_imp.png", width = 480, height = 350)
-hist(Zeller_imp_result$Omnibus_pval, ylim = c(0, 70), cex.lab = 1.5, cex.axis=1.5, main = "", xlab = "")
-dev.off()
-
-
-
-
-raw_imp_DEseq2_result <- c(Qin_result$raw_result[7,9], Qin_result$imputed_result[7,9], Karlsson_result$raw_result[7,9], Karlsson_result$imputed_result[7,9],
-                           Feng_result$raw_result[7,9], Feng_result$imputed_result[7,9], Yu_result$raw_result[7,9], Yu_result$imputed_result[7,9],
-                           Vogtmann_result$raw_result[7,9], Vogtmann_result$imputed_result[7,9], Zeller_result$raw_result[7,9], Zeller_result$imputed_result[7,9])
+raw_imp_DEseq2_result <- c(Qin_result$raw_result[6,5], Qin_result$imputed_result[6,5], Karlsson_result$raw_result[6,5], Karlsson_result$imputed_result[6,5],
+                           Feng_result$raw_result[6,5], Feng_result$imputed_result[6,5], Yu_result$raw_result[6,5], Yu_result$imputed_result[6,5],
+                           Vogtmann_result$raw_result[6,5], Vogtmann_result$imputed_result[6,5], Zeller_result$raw_result[6,5], Zeller_result$imputed_result[6,5])
 raw_imp_DEseq2_result <- cbind(raw_imp_DEseq2_result, c("Qin", "Qin", "Karlsson", "Karlsson", "Feng", "Feng", "Yu", "Yu", "Vogtmann", "Vogtmann", "Zeller", "Zeller"))
 raw_imp_DEseq2_result <- cbind(raw_imp_DEseq2_result, c("raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp"))
 colnames(raw_imp_DEseq2_result) <- c("values", "data", "type")
@@ -2100,7 +1621,41 @@ raw_imp_DEseq2_result$data <- factor(raw_imp_DEseq2_result$data, levels = c("Qin
 raw_imp_DEseq2_result$type <- factor(raw_imp_DEseq2_result$type, levels = c("raw", "imp"))
 
 
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/DEseq2_result11.pdf", width = 15, height = 5)
+pdf("/Users/hanxinyu/Desktop/mbimpute1/real_data_analysis/DEseq2_result_random_forest1.pdf", width = 15, height = 5)
+ggplot(raw_imp_DEseq2_result, aes(fill=type, y=values, x=data)) +
+  geom_bar(position = "dodge", stat="identity") +
+  scale_x_discrete(labels=c("Qin et al.", "Karlsson et al.", "Feng et al.", 
+                            "Yu et al.", "Vogtmann et al.", "Zeller et al.")) +
+  scale_fill_manual(name="Method",
+                    labels=c("DESeq2-phyloseq", "TphPMF+DESeq2-phyloseq"),
+                    values=c("raw"=alpha("#636363", 0.5), "imp"="#636363")) +
+  ylab("PR-AUC") +
+  coord_cartesian(ylim=c(0, 0.8)) +
+  theme_bw() +
+  theme(panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        axis.text.x=element_text(size=12, angle=45, hjust=1),
+        axis.title.y=element_text(size=14),
+        panel.border=element_blank(),
+        axis.line=element_line(colour="black"),
+        legend.position="right") +
+  guides(fill=guide_legend(override.aes=list(alpha=c(0.5,1))))
+
+
+dev.off()
+raw_imp_DEseq2_result <- c(Qin_result$raw_result[6,7], Qin_result$imputed_result[6,7], Karlsson_result$raw_result[6,7], Karlsson_result$imputed_result[6,7],
+                           Feng_result$raw_result[6,7], Feng_result$imputed_result[6,7], Yu_result$raw_result[6,7], Yu_result$imputed_result[6,7],
+                           Vogtmann_result$raw_result[6,7], Vogtmann_result$imputed_result[6,7], Zeller_result$raw_result[6,7], Zeller_result$imputed_result[6,7])
+raw_imp_DEseq2_result <- cbind(raw_imp_DEseq2_result, c("Qin", "Qin", "Karlsson", "Karlsson", "Feng", "Feng", "Yu", "Yu", "Vogtmann", "Vogtmann", "Zeller", "Zeller"))
+raw_imp_DEseq2_result <- cbind(raw_imp_DEseq2_result, c("raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp"))
+colnames(raw_imp_DEseq2_result) <- c("values", "data", "type")
+raw_imp_DEseq2_result <- data.frame(raw_imp_DEseq2_result)
+raw_imp_DEseq2_result$values <- as.numeric(as.character(raw_imp_DEseq2_result$values))
+raw_imp_DEseq2_result$data <- factor(raw_imp_DEseq2_result$data, levels = c("Qin", "Karlsson", "Feng", "Yu", "Vogtmann", "Zeller"))
+raw_imp_DEseq2_result$type <- factor(raw_imp_DEseq2_result$type, levels = c("raw", "imp"))
+
+
+pdf("/Users/hanxinyu/Desktop/mbimpute1/real_data_analysis/DEseq2_result_xgboost.pdf", width = 15, height = 5)
 ggplot(raw_imp_DEseq2_result, aes(fill=type, y=values, x=data)) +
   geom_bar(position = "dodge", stat="identity") +
   scale_x_discrete(labels=c("Qin et al.", "Karlsson et al.", "Feng et al.", 
@@ -2125,148 +1680,63 @@ dev.off()
 
 
 
-raw_imp_DEseq2_result <- c(Qin_result$raw_result[7,10], Qin_result$imputed_result[7,10], Karlsson_result$raw_result[7,10], Karlsson_result$imputed_result[7,10],
-                           Feng_result$raw_result[7,10], Feng_result$imputed_result[7,10], Yu_result$raw_result[7,10], Yu_result$imputed_result[7,10],
-                           Vogtmann_result$raw_result[7,10], Vogtmann_result$imputed_result[7,10], Zeller_result$raw_result[7,10], Zeller_result$imputed_result[7,10])
-raw_imp_DEseq2_result <- cbind(raw_imp_DEseq2_result, c("Qin", "Qin", "Karlsson", "Karlsson", "Feng", "Feng", "Yu", "Yu", "Vogtmann", "Vogtmann", "Zeller", "Zeller"))
-raw_imp_DEseq2_result <- cbind(raw_imp_DEseq2_result, c("raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp"))
-colnames(raw_imp_DEseq2_result) <- c("values", "data", "type")
-raw_imp_DEseq2_result <- data.frame(raw_imp_DEseq2_result)
-raw_imp_DEseq2_result$values <- as.numeric(as.character(raw_imp_DEseq2_result$values))
-raw_imp_DEseq2_result$data <- factor(raw_imp_DEseq2_result$data, levels = c("Qin", "Karlsson", "Feng", "Yu", "Vogtmann", "Zeller"))
-raw_imp_DEseq2_result$type <- factor(raw_imp_DEseq2_result$type, levels = c("raw", "imp"))
-
-
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/DEseq2_result2.pdf", width = 15, height = 5)
-ggplot(raw_imp_DEseq2_result, aes(fill=type, y=values, x=data)) +
-  geom_bar(position = "dodge", stat="identity") +
-  scale_x_discrete(labels=c("Qin et al.", "Karlsson et al.", "Feng et al.", 
-                            "Yu et al.", "Vogtmann et al.", "Zeller et al.")) +
-  scale_fill_manual(name="Method",
-                    labels=c("DESeq2-phyloseq", "BHPMF+DESeq2-phyloseq"),
-                    values=c("raw"=alpha("#636363", 0.5), "imp"="#636363")) +
-  ylab("ROC-AUC") +
-  coord_cartesian(ylim=c(0, 0.8)) +
-  theme_bw() +
-  theme(panel.grid.major=element_blank(),
-        panel.grid.minor=element_blank(),
-        axis.text.x=element_text(size=12, angle=45, hjust=1),
-        axis.title.y=element_text(size=14),
-        panel.border=element_blank(),
-        axis.line=element_line(colour="black"),
-        legend.position="right") +
-  guides(fill=guide_legend(override.aes=list(alpha=c(0.5,1))))
-
-
-dev.off()
-
-
-
-
-
-
-raw_imp_Omnibus_result <- c(Qin_result$raw_result[8,12], Qin_result$imputed_result[8,12], Karlsson_result$raw_result[8,12], Karlsson_result$imputed_result[8,12],
-                            Feng_result$raw_result[8,12], Feng_result$imputed_result[8,12], Yu_result$raw_result[8,12], Yu_result$imputed_result[8,12],
-                            Vogtmann_result$raw_result[8,12], Vogtmann_result$imputed_result[8,12], Zeller_result$raw_result[8,12], Zeller_result$imputed_result[8,12])
-raw_imp_Omnibus_result <- cbind(raw_imp_Omnibus_result, c("Qin", "Qin", "Karlsson", "Karlsson", "Feng", "Feng", "Yu", "Yu", "Vogtmann", "Vogtmann", "Zeller", "Zeller"))
-raw_imp_Omnibus_result <- cbind(raw_imp_Omnibus_result, c("raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp", "raw", "imp"))
-colnames(raw_imp_Omnibus_result) <- c("values", "data", "type")
-raw_imp_Omnibus_result <- data.frame(raw_imp_Omnibus_result)
-raw_imp_Omnibus_result$values <- as.numeric(as.character(raw_imp_Omnibus_result$values))
-raw_imp_Omnibus_result$data <- factor(raw_imp_Omnibus_result$data, levels = c("Qin", "Karlsson", "Feng", "Yu", "Vogtmann", "Zeller"))
-raw_imp_Omnibus_result$type <- factor(raw_imp_Omnibus_result$type, levels = c("raw", "imp"))
-
-
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/Omnibus_result_svm.guass_2.pdf", width = 15, height = 5)
-ggplot(raw_imp_Omnibus_result, aes(fill=type, y=values, x=data)) +
-  geom_bar(position = "dodge", stat="identity") +
-  scale_x_discrete(labels=c("Qin et al.", "Karlsson et al.", "Feng et al.", 
-                            "Yu et al.", "Vogtmann et al.", "Zeller et al.")) +
-  scale_fill_manual(name="Method",
-                    labels=c("Omnibus", "BHPMF+Omnibus"),
-                    values=c("raw"=alpha("#636363", 0.5), "imp"="#636363")) +
-  ylab("ROC-AUC") +
-  coord_cartesian(ylim=c(0, 0.8)) +
-  theme_bw() +
-  theme(panel.grid.major=element_blank(),
-        panel.grid.minor=element_blank(),
-        axis.text.x=element_text(size=12, angle=45, hjust=1),
-        axis.title.y=element_text(size=14),
-        panel.border=element_blank(),
-        axis.line=element_line(colour="black"),
-        legend.position="right") +
-  guides(fill=guide_legend(override.aes=list(alpha=c(0.5,1))))
-
-
-dev.off()
-
-
-
-
-
-
-
-
-
-T2D_grt_cond_overlap <- matrix(nrow = 8, ncol = 8)
-for(i in 1:8){
-  T2D_grt_cond_overlap[i,1] <- length(Qin_raw_result[[i]]$T2D_grt_cond)
-  T2D_grt_cond_overlap[i,2] <- length(Qin_imp_result[[i]]$T2D_grt_cond)
-  T2D_grt_cond_overlap[i,3] <- length(Karlsson_raw_result[[i]]$T2D_grt_cond)
-  T2D_grt_cond_overlap[i,4] <- length(Karlsson_imp_result[[i]]$T2D_grt_cond)
-  T2D_grt_cond_overlap[i,5] <- length(intersect(Qin_raw_result[[i]]$T2D_grt_cond, Karlsson_raw_result[[i]]$T2D_grt_cond))
-  T2D_grt_cond_overlap[i,6] <- length(intersect(Qin_imp_result[[i]]$T2D_grt_cond, Karlsson_imp_result[[i]]$T2D_grt_cond))
-  T2D_grt_cond_overlap[i,7] <- T2D_grt_cond_overlap[i,5] / length(union(Qin_raw_result[[i]]$T2D_grt_cond, Karlsson_raw_result[[i]]$T2D_grt_cond))
-  T2D_grt_cond_overlap[i,8] <- T2D_grt_cond_overlap[i,6] / length(union(Qin_imp_result[[i]]$T2D_grt_cond, Karlsson_imp_result[[i]]$T2D_grt_cond))
+T2D_grt_cond_overlap <- matrix(nrow = 6, ncol = 8)
+for(i in 1:6){
+  T2D_grt_cond_overlap[i,1] <- length(Qin_raw_result1[[i]]$T2D_grt_cond)
+  T2D_grt_cond_overlap[i,2] <- length(Qin_imp_result1[[i]]$T2D_grt_cond)
+  T2D_grt_cond_overlap[i,3] <- length(Karlsson_raw_result1[[i]]$T2D_grt_cond)
+  T2D_grt_cond_overlap[i,4] <- length(Karlsson_imp_result1[[i]]$T2D_grt_cond)
+  T2D_grt_cond_overlap[i,5] <- length(intersect(Qin_raw_result1[[i]]$T2D_grt_cond, Karlsson_raw_result1[[i]]$T2D_grt_cond))
+  T2D_grt_cond_overlap[i,6] <- length(intersect(Qin_imp_result1[[i]]$T2D_grt_cond, Karlsson_imp_result1[[i]]$T2D_grt_cond))
+  T2D_grt_cond_overlap[i,7] <- T2D_grt_cond_overlap[i,5] / length(union(Qin_raw_result1[[i]]$T2D_grt_cond, Karlsson_raw_result1[[i]]$T2D_grt_cond))
+  T2D_grt_cond_overlap[i,8] <- T2D_grt_cond_overlap[i,6] / length(union(Qin_imp_result1[[i]]$T2D_grt_cond, Karlsson_imp_result1[[i]]$T2D_grt_cond))
 }
 colnames(T2D_grt_cond_overlap) <- c("Qin_raw", "Qin_imp", "Karlsson_raw", "Karlsson_imp", "intersect_raw", "intersect_imp", "DR_raw", "DR_imp")
-rownames(T2D_grt_cond_overlap) <- c("Wilcox", "t_test", "ANCOM", "ZINB", "NB", "Metaseq", "DEseq2","Omnibus")
+rownames(T2D_grt_cond_overlap) <- c("Wilcox", "ANCOM-BC2", "LOCOM", "LinDA", "Metaseq", "DEseq2")
 
 
-T2D_leq_cond_overlap <- matrix(nrow = 8, ncol = 8)
-for(i in 1:8){
-  T2D_leq_cond_overlap[i,1] <- length(Qin_raw_result[[i]]$T2D_leq_cond)
-  T2D_leq_cond_overlap[i,2] <- length(Qin_imp_result[[i]]$T2D_leq_cond)
-  T2D_leq_cond_overlap[i,3] <- length(Karlsson_raw_result[[i]]$T2D_leq_cond)
-  T2D_leq_cond_overlap[i,4] <- length(Karlsson_imp_result[[i]]$T2D_leq_cond)
-  T2D_leq_cond_overlap[i,5] <- length(intersect(Qin_raw_result[[i]]$T2D_leq_cond, Karlsson_raw_result[[i]]$T2D_leq_cond))
-  T2D_leq_cond_overlap[i,6] <- length(intersect(Qin_imp_result[[i]]$T2D_leq_cond, Karlsson_imp_result[[i]]$T2D_leq_cond))
-  T2D_leq_cond_overlap[i,7] <- T2D_leq_cond_overlap[i,5] / length(union(Qin_raw_result[[i]]$T2D_leq_cond, Karlsson_raw_result[[i]]$T2D_leq_cond))
-  T2D_leq_cond_overlap[i,8] <- T2D_leq_cond_overlap[i,6] / length(union(Qin_imp_result[[i]]$T2D_leq_cond, Karlsson_imp_result[[i]]$T2D_leq_cond))
+T2D_leq_cond_overlap <- matrix(nrow = 6, ncol = 8)
+for(i in 1:6){
+  T2D_leq_cond_overlap[i,1] <- length(Qin_raw_result1[[i]]$T2D_leq_cond)
+  T2D_leq_cond_overlap[i,2] <- length(Qin_imp_result1[[i]]$T2D_leq_cond)
+  T2D_leq_cond_overlap[i,3] <- length(Karlsson_raw_result1[[i]]$T2D_leq_cond)
+  T2D_leq_cond_overlap[i,4] <- length(Karlsson_imp_result1[[i]]$T2D_leq_cond)
+  T2D_leq_cond_overlap[i,5] <- length(intersect(Qin_raw_result1[[i]]$T2D_leq_cond, Karlsson_raw_result1[[i]]$T2D_leq_cond))
+  T2D_leq_cond_overlap[i,6] <- length(intersect(Qin_imp_result1[[i]]$T2D_leq_cond, Karlsson_imp_result1[[i]]$T2D_leq_cond))
+  T2D_leq_cond_overlap[i,7] <- T2D_leq_cond_overlap[i,5] / length(union(Qin_raw_result1[[i]]$T2D_leq_cond, Karlsson_raw_result1[[i]]$T2D_leq_cond))
+  T2D_leq_cond_overlap[i,8] <- T2D_leq_cond_overlap[i,6] / length(union(Qin_imp_result1[[i]]$T2D_leq_cond, Karlsson_imp_result1[[i]]$T2D_leq_cond))
 }
 colnames(T2D_leq_cond_overlap) <- c("Qin_raw", "Qin_imp", "Karlsson_raw", "Karlsson_imp", "intersect_raw", "intersect_imp", "DR_raw", "DR_imp")
-rownames(T2D_leq_cond_overlap) <- c("Wilcox", "t_test", "ANCOM", "ZINB", "NB", "Metaseq", "DEseq2","Omnibus")
+rownames(T2D_leq_cond_overlap) <- c("Wilcox", "ANCOM-BC2", "LOCOM", "LinDA", "Metaseq", "DEseq2")
 
 
 
 
-
-
-CRC_grt_overlap_raw <- matrix(nrow = 8, ncol = 26)
-for(i in 1:8){
-  CRC_grt_overlap_raw[i,1] <- length(Feng_raw_result[[i]]$T2D_grt_cond)
-  CRC_grt_overlap_raw[i,2] <- length(Vogtmann_raw_result[[i]]$T2D_grt_cond)
-  CRC_grt_overlap_raw[i,3] <- length(Yu_raw_result[[i]]$T2D_grt_cond)
-  CRC_grt_overlap_raw[i,4] <- length(Zeller_raw_result[[i]]$T2D_grt_cond)
+CRC_grt_overlap_raw <- matrix(nrow = 6, ncol = 26)
+for(i in 1:6){
+  CRC_grt_overlap_raw[i,1] <- length(Feng_raw_result1[[i]]$T2D_grt_cond)
+  CRC_grt_overlap_raw[i,2] <- length(Vogtmann_raw_result1[[i]]$T2D_grt_cond)
+  CRC_grt_overlap_raw[i,3] <- length(Yu_raw_result1[[i]]$T2D_grt_cond)
+  CRC_grt_overlap_raw[i,4] <- length(Zeller_raw_result1[[i]]$T2D_grt_cond)
   
-  all_intersect <- intersect(intersect(intersect(Vogtmann_raw_result[[i]]$T2D_grt_cond, Yu_raw_result[[i]]$T2D_grt_cond),
-                                       Zeller_raw_result[[i]]$T2D_grt_cond),Feng_raw_result[[i]]$T2D_grt_cond)
-  all_union <- union(union(union(Feng_raw_result[[i]]$T2D_grt_cond, Vogtmann_raw_result[[i]]$T2D_grt_cond), 
-                           Yu_raw_result[[i]]$T2D_grt_cond),  Zeller_raw_result[[i]]$T2D_grt_cond)
-  FV <- intersect(Feng_raw_result[[i]]$T2D_grt_cond, Vogtmann_raw_result[[i]]$T2D_grt_cond)
-  FY <- intersect(Feng_raw_result[[i]]$T2D_grt_cond, Yu_raw_result[[i]]$T2D_grt_cond)
-  FZ <- intersect(Feng_raw_result[[i]]$T2D_grt_cond, Zeller_raw_result[[i]]$T2D_grt_cond)
-  VY <- intersect(Vogtmann_raw_result[[i]]$T2D_grt_cond, Yu_raw_result[[i]]$T2D_grt_cond)
-  VZ <- intersect(Vogtmann_raw_result[[i]]$T2D_grt_cond, Zeller_raw_result[[i]]$T2D_grt_cond)
-  YZ <- intersect(Yu_raw_result[[i]]$T2D_grt_cond, Zeller_raw_result[[i]]$T2D_grt_cond)
-  FVY <- intersect(intersect(Feng_raw_result[[i]]$T2D_grt_cond, Vogtmann_raw_result[[i]]$T2D_grt_cond),
-                   Yu_raw_result[[i]]$T2D_grt_cond)
-  FVZ <- intersect(intersect(Feng_raw_result[[i]]$T2D_grt_cond, Vogtmann_raw_result[[i]]$T2D_grt_cond),
-                   Zeller_raw_result[[i]]$T2D_grt_cond)
-  FYZ <- intersect(intersect(Feng_raw_result[[i]]$T2D_grt_cond, Yu_raw_result[[i]]$T2D_grt_cond),
-                   Zeller_raw_result[[i]]$T2D_grt_cond)
-  VYZ <- intersect(intersect(Vogtmann_raw_result[[i]]$T2D_grt_cond, Yu_raw_result[[i]]$T2D_grt_cond),
-                   Zeller_raw_result[[i]]$T2D_grt_cond)
+  all_intersect <- intersect(intersect(intersect(Vogtmann_raw_result1[[i]]$T2D_grt_cond, Yu_raw_result1[[i]]$T2D_grt_cond),
+                                       Zeller_raw_result1[[i]]$T2D_grt_cond),Feng_raw_result1[[i]]$T2D_grt_cond)
+  all_union <- union(union(union(Feng_raw_result1[[i]]$T2D_grt_cond, Vogtmann_raw_result1[[i]]$T2D_grt_cond), 
+                           Yu_raw_result1[[i]]$T2D_grt_cond),  Zeller_raw_result1[[i]]$T2D_grt_cond)
+  FV <- intersect(Feng_raw_result1[[i]]$T2D_grt_cond, Vogtmann_raw_result1[[i]]$T2D_grt_cond)
+  FY <- intersect(Feng_raw_result1[[i]]$T2D_grt_cond, Yu_raw_result1[[i]]$T2D_grt_cond)
+  FZ <- intersect(Feng_raw_result1[[i]]$T2D_grt_cond, Zeller_raw_result1[[i]]$T2D_grt_cond)
+  VY <- intersect(Vogtmann_raw_result1[[i]]$T2D_grt_cond, Yu_raw_result1[[i]]$T2D_grt_cond)
+  VZ <- intersect(Vogtmann_raw_result1[[i]]$T2D_grt_cond, Zeller_raw_result1[[i]]$T2D_grt_cond)
+  YZ <- intersect(Yu_raw_result1[[i]]$T2D_grt_cond, Zeller_raw_result1[[i]]$T2D_grt_cond)
+  FVY <- intersect(intersect(Feng_raw_result1[[i]]$T2D_grt_cond, Vogtmann_raw_result1[[i]]$T2D_grt_cond),
+                   Yu_raw_result1[[i]]$T2D_grt_cond)
+  FVZ <- intersect(intersect(Feng_raw_result1[[i]]$T2D_grt_cond, Vogtmann_raw_result1[[i]]$T2D_grt_cond),
+                   Zeller_raw_result1[[i]]$T2D_grt_cond)
+  FYZ <- intersect(intersect(Feng_raw_result1[[i]]$T2D_grt_cond, Yu_raw_result1[[i]]$T2D_grt_cond),
+                   Zeller_raw_result1[[i]]$T2D_grt_cond)
+  VYZ <- intersect(intersect(Vogtmann_raw_result1[[i]]$T2D_grt_cond, Yu_raw_result1[[i]]$T2D_grt_cond),
+                   Zeller_raw_result1[[i]]$T2D_grt_cond)
   
   CRC_grt_overlap_raw[i,15] <- length(all_intersect)
   CRC_grt_overlap_raw[i,11] <- length(FVY[!(FVY %in% all_intersect)])
@@ -2281,20 +1751,20 @@ for(i in 1:8){
   CRC_grt_overlap_raw[i,9] <- length(VZ[!(VZ %in% union(FVZ, VYZ))])
   CRC_grt_overlap_raw[i,10] <- length(YZ[!(YZ %in% union(FYZ, VYZ))])
   
-  FV <- union(Feng_raw_result[[i]]$T2D_grt_cond, Vogtmann_raw_result[[i]]$T2D_grt_cond)
-  FY <- union(Feng_raw_result[[i]]$T2D_grt_cond, Yu_raw_result[[i]]$T2D_grt_cond)
-  FZ <- union(Feng_raw_result[[i]]$T2D_grt_cond, Zeller_raw_result[[i]]$T2D_grt_cond)
-  VY <- union(Vogtmann_raw_result[[i]]$T2D_grt_cond, Yu_raw_result[[i]]$T2D_grt_cond)
-  VZ <- union(Vogtmann_raw_result[[i]]$T2D_grt_cond, Zeller_raw_result[[i]]$T2D_grt_cond)
-  YZ <- union(Yu_raw_result[[i]]$T2D_grt_cond, Zeller_raw_result[[i]]$T2D_grt_cond)
-  FVY <- union(union(Feng_raw_result[[i]]$T2D_grt_cond, Vogtmann_raw_result[[i]]$T2D_grt_cond),
-               Yu_raw_result[[i]]$T2D_grt_cond)
-  FVZ <- union(union(Feng_raw_result[[i]]$T2D_grt_cond, Vogtmann_raw_result[[i]]$T2D_grt_cond),
-               Zeller_raw_result[[i]]$T2D_grt_cond)
-  FYZ <- union(union(Feng_raw_result[[i]]$T2D_grt_cond, Yu_raw_result[[i]]$T2D_grt_cond),
-               Zeller_raw_result[[i]]$T2D_grt_cond)
-  VYZ <- union(union(Vogtmann_raw_result[[i]]$T2D_grt_cond, Yu_raw_result[[i]]$T2D_grt_cond),
-               Zeller_raw_result[[i]]$T2D_grt_cond)
+  FV <- union(Feng_raw_result1[[i]]$T2D_grt_cond, Vogtmann_raw_result1[[i]]$T2D_grt_cond)
+  FY <- union(Feng_raw_result1[[i]]$T2D_grt_cond, Yu_raw_result1[[i]]$T2D_grt_cond)
+  FZ <- union(Feng_raw_result1[[i]]$T2D_grt_cond, Zeller_raw_result1[[i]]$T2D_grt_cond)
+  VY <- union(Vogtmann_raw_result1[[i]]$T2D_grt_cond, Yu_raw_result1[[i]]$T2D_grt_cond)
+  VZ <- union(Vogtmann_raw_result1[[i]]$T2D_grt_cond, Zeller_raw_result1[[i]]$T2D_grt_cond)
+  YZ <- union(Yu_raw_result1[[i]]$T2D_grt_cond, Zeller_raw_result1[[i]]$T2D_grt_cond)
+  FVY <- union(union(Feng_raw_result1[[i]]$T2D_grt_cond, Vogtmann_raw_result1[[i]]$T2D_grt_cond),
+               Yu_raw_result1[[i]]$T2D_grt_cond)
+  FVZ <- union(union(Feng_raw_result1[[i]]$T2D_grt_cond, Vogtmann_raw_result1[[i]]$T2D_grt_cond),
+               Zeller_raw_result1[[i]]$T2D_grt_cond)
+  FYZ <- union(union(Feng_raw_result1[[i]]$T2D_grt_cond, Yu_raw_result1[[i]]$T2D_grt_cond),
+               Zeller_raw_result1[[i]]$T2D_grt_cond)
+  VYZ <- union(union(Vogtmann_raw_result1[[i]]$T2D_grt_cond, Yu_raw_result1[[i]]$T2D_grt_cond),
+               Zeller_raw_result1[[i]]$T2D_grt_cond)
   
   CRC_grt_overlap_raw[i,16] <- CRC_grt_overlap_raw[i,5] / length(FV)
   CRC_grt_overlap_raw[i,17] <- CRC_grt_overlap_raw[i,6] / length(FY)
@@ -2309,34 +1779,34 @@ for(i in 1:8){
   CRC_grt_overlap_raw[i,25] <- CRC_grt_overlap_raw[i,14] / length(VYZ)
   CRC_grt_overlap_raw[i,26] <- CRC_grt_overlap_raw[i,15] / length(all_union)
 }
-rownames(CRC_grt_overlap_raw) <- c("Wilcox", "t_test", "ANCOM", "ZINB", "NB", "Metaseq", "DEseq2","Omnibus")
+rownames(CRC_grt_overlap_raw) <- c("Wilcox", "ANCOM-BC2", "LOCOM", "LinDA", "Metaseq", "DEseq2")
 colnames(CRC_grt_overlap_raw) <- c("Feng", "Vogtmann", "Yu", "Zeller", "FV", "FY", "FZ", "VY", "VZ", "YZ", "FVY", "FVZ", "FYZ", "VYZ", "FVYZ", "FV_rate", "FY_rate", "FZ_rate", "VY_rate", "VZ_rate", "YZ_rate", "FVY_rate", "FVZ_rate", "FYZ_rate", "VYZ_rate", "FVYZ_rate")
 
-CRC_grt_overlap_imputed <- matrix(nrow = 8, ncol = 26)
-for(i in 1:8){
-  CRC_grt_overlap_imputed[i,1] <- length(Feng_imp_result[[i]]$T2D_grt_cond)
-  CRC_grt_overlap_imputed[i,2] <- length(Vogtmann_imp_result[[i]]$T2D_grt_cond)
-  CRC_grt_overlap_imputed[i,3] <- length(Yu_imp_result[[i]]$T2D_grt_cond)
-  CRC_grt_overlap_imputed[i,4] <- length(Zeller_imp_result[[i]]$T2D_grt_cond)
+CRC_grt_overlap_imputed <- matrix(nrow = 6, ncol = 26)
+for(i in 1:6){
+  CRC_grt_overlap_imputed[i,1] <- length(Feng_imp_result1[[i]]$T2D_grt_cond)
+  CRC_grt_overlap_imputed[i,2] <- length(Vogtmann_imp_result1[[i]]$T2D_grt_cond)
+  CRC_grt_overlap_imputed[i,3] <- length(Yu_imp_result1[[i]]$T2D_grt_cond)
+  CRC_grt_overlap_imputed[i,4] <- length(Zeller_imp_result1[[i]]$T2D_grt_cond)
   
-  all_intersect <- intersect(intersect(intersect(Vogtmann_imp_result[[i]]$T2D_grt_cond, Yu_imp_result[[i]]$T2D_grt_cond),
-                                       Zeller_imp_result[[i]]$T2D_grt_cond),Feng_imp_result[[i]]$T2D_grt_cond)
-  all_union <- union(union(union(Feng_imp_result[[i]]$T2D_grt_cond, Vogtmann_imp_result[[i]]$T2D_grt_cond), 
-                           Yu_imp_result[[i]]$T2D_grt_cond),  Zeller_imp_result[[i]]$T2D_grt_cond)
-  FV <- intersect(Feng_imp_result[[i]]$T2D_grt_cond, Vogtmann_imp_result[[i]]$T2D_grt_cond)
-  FY <- intersect(Feng_imp_result[[i]]$T2D_grt_cond, Yu_imp_result[[i]]$T2D_grt_cond)
-  FZ <- intersect(Feng_imp_result[[i]]$T2D_grt_cond, Zeller_imp_result[[i]]$T2D_grt_cond)
-  VY <- intersect(Vogtmann_imp_result[[i]]$T2D_grt_cond, Yu_imp_result[[i]]$T2D_grt_cond)
-  VZ <- intersect(Vogtmann_imp_result[[i]]$T2D_grt_cond, Zeller_imp_result[[i]]$T2D_grt_cond)
-  YZ <- intersect(Yu_imp_result[[i]]$T2D_grt_cond, Zeller_imp_result[[i]]$T2D_grt_cond)
-  FVY <- intersect(intersect(Feng_imp_result[[i]]$T2D_grt_cond, Vogtmann_imp_result[[i]]$T2D_grt_cond),
-                   Yu_imp_result[[i]]$T2D_grt_cond)
-  FVZ <- intersect(intersect(Feng_imp_result[[i]]$T2D_grt_cond, Vogtmann_imp_result[[i]]$T2D_grt_cond),
-                   Zeller_imp_result[[i]]$T2D_grt_cond)
-  FYZ <- intersect(intersect(Feng_imp_result[[i]]$T2D_grt_cond, Yu_imp_result[[i]]$T2D_grt_cond),
-                   Zeller_imp_result[[i]]$T2D_grt_cond)
-  VYZ <- intersect(intersect(Vogtmann_imp_result[[i]]$T2D_grt_cond, Yu_imp_result[[i]]$T2D_grt_cond),
-                   Zeller_imp_result[[i]]$T2D_grt_cond)
+  all_intersect <- intersect(intersect(intersect(Vogtmann_imp_result1[[i]]$T2D_grt_cond, Yu_imp_result1[[i]]$T2D_grt_cond),
+                                       Zeller_imp_result1[[i]]$T2D_grt_cond),Feng_imp_result1[[i]]$T2D_grt_cond)
+  all_union <- union(union(union(Feng_imp_result1[[i]]$T2D_grt_cond, Vogtmann_imp_result1[[i]]$T2D_grt_cond), 
+                           Yu_imp_result1[[i]]$T2D_grt_cond),  Zeller_imp_result1[[i]]$T2D_grt_cond)
+  FV <- intersect(Feng_imp_result1[[i]]$T2D_grt_cond, Vogtmann_imp_result1[[i]]$T2D_grt_cond)
+  FY <- intersect(Feng_imp_result1[[i]]$T2D_grt_cond, Yu_imp_result1[[i]]$T2D_grt_cond)
+  FZ <- intersect(Feng_imp_result1[[i]]$T2D_grt_cond, Zeller_imp_result1[[i]]$T2D_grt_cond)
+  VY <- intersect(Vogtmann_imp_result1[[i]]$T2D_grt_cond, Yu_imp_result1[[i]]$T2D_grt_cond)
+  VZ <- intersect(Vogtmann_imp_result1[[i]]$T2D_grt_cond, Zeller_imp_result1[[i]]$T2D_grt_cond)
+  YZ <- intersect(Yu_imp_result1[[i]]$T2D_grt_cond, Zeller_imp_result1[[i]]$T2D_grt_cond)
+  FVY <- intersect(intersect(Feng_imp_result1[[i]]$T2D_grt_cond, Vogtmann_imp_result1[[i]]$T2D_grt_cond),
+                   Yu_imp_result1[[i]]$T2D_grt_cond)
+  FVZ <- intersect(intersect(Feng_imp_result1[[i]]$T2D_grt_cond, Vogtmann_imp_result1[[i]]$T2D_grt_cond),
+                   Zeller_imp_result1[[i]]$T2D_grt_cond)
+  FYZ <- intersect(intersect(Feng_imp_result1[[i]]$T2D_grt_cond, Yu_imp_result1[[i]]$T2D_grt_cond),
+                   Zeller_imp_result1[[i]]$T2D_grt_cond)
+  VYZ <- intersect(intersect(Vogtmann_imp_result1[[i]]$T2D_grt_cond, Yu_imp_result1[[i]]$T2D_grt_cond),
+                   Zeller_imp_result1[[i]]$T2D_grt_cond)
   
   CRC_grt_overlap_imputed[i,15] <- length(all_intersect)
   CRC_grt_overlap_imputed[i,11] <- length(FVY[!(FVY %in% all_intersect)])
@@ -2351,20 +1821,20 @@ for(i in 1:8){
   CRC_grt_overlap_imputed[i,9] <- length(VZ[!(VZ %in% union(FVZ, VYZ))])
   CRC_grt_overlap_imputed[i,10] <- length(YZ[!(YZ %in% union(FYZ, VYZ))])
   
-  FV <- union(Feng_imp_result[[i]]$T2D_grt_cond, Vogtmann_imp_result[[i]]$T2D_grt_cond)
-  FY <- union(Feng_imp_result[[i]]$T2D_grt_cond, Yu_imp_result[[i]]$T2D_grt_cond)
-  FZ <- union(Feng_imp_result[[i]]$T2D_grt_cond, Zeller_imp_result[[i]]$T2D_grt_cond)
-  VY <- union(Vogtmann_imp_result[[i]]$T2D_grt_cond, Yu_imp_result[[i]]$T2D_grt_cond)
-  VZ <- union(Vogtmann_imp_result[[i]]$T2D_grt_cond, Zeller_imp_result[[i]]$T2D_grt_cond)
-  YZ <- union(Yu_imp_result[[i]]$T2D_grt_cond, Zeller_imp_result[[i]]$T2D_grt_cond)
-  FVY <- union(union(Feng_imp_result[[i]]$T2D_grt_cond, Vogtmann_imp_result[[i]]$T2D_grt_cond),
-               Yu_imp_result[[i]]$T2D_grt_cond)
-  FVZ <- union(union(Feng_imp_result[[i]]$T2D_grt_cond, Vogtmann_imp_result[[i]]$T2D_grt_cond),
-               Zeller_imp_result[[i]]$T2D_grt_cond)
-  FYZ <- union(union(Feng_imp_result[[i]]$T2D_grt_cond, Yu_imp_result[[i]]$T2D_grt_cond),
-               Zeller_imp_result[[i]]$T2D_grt_cond)
-  VYZ <- union(union(Vogtmann_imp_result[[i]]$T2D_grt_cond, Yu_imp_result[[i]]$T2D_grt_cond),
-               Zeller_imp_result[[i]]$T2D_grt_cond)
+  FV <- union(Feng_imp_result1[[i]]$T2D_grt_cond, Vogtmann_imp_result1[[i]]$T2D_grt_cond)
+  FY <- union(Feng_imp_result1[[i]]$T2D_grt_cond, Yu_imp_result1[[i]]$T2D_grt_cond)
+  FZ <- union(Feng_imp_result1[[i]]$T2D_grt_cond, Zeller_imp_result1[[i]]$T2D_grt_cond)
+  VY <- union(Vogtmann_imp_result1[[i]]$T2D_grt_cond, Yu_imp_result1[[i]]$T2D_grt_cond)
+  VZ <- union(Vogtmann_imp_result1[[i]]$T2D_grt_cond, Zeller_imp_result1[[i]]$T2D_grt_cond)
+  YZ <- union(Yu_imp_result1[[i]]$T2D_grt_cond, Zeller_imp_result1[[i]]$T2D_grt_cond)
+  FVY <- union(union(Feng_imp_result1[[i]]$T2D_grt_cond, Vogtmann_imp_result1[[i]]$T2D_grt_cond),
+               Yu_imp_result1[[i]]$T2D_grt_cond)
+  FVZ <- union(union(Feng_imp_result1[[i]]$T2D_grt_cond, Vogtmann_imp_result1[[i]]$T2D_grt_cond),
+               Zeller_imp_result1[[i]]$T2D_grt_cond)
+  FYZ <- union(union(Feng_imp_result1[[i]]$T2D_grt_cond, Yu_imp_result1[[i]]$T2D_grt_cond),
+               Zeller_imp_result1[[i]]$T2D_grt_cond)
+  VYZ <- union(union(Vogtmann_imp_result1[[i]]$T2D_grt_cond, Yu_imp_result1[[i]]$T2D_grt_cond),
+               Zeller_imp_result1[[i]]$T2D_grt_cond)
   
   CRC_grt_overlap_imputed[i,16] <- CRC_grt_overlap_imputed[i,5] / length(FV)
   CRC_grt_overlap_imputed[i,17] <- CRC_grt_overlap_imputed[i,6] / length(FY)
@@ -2379,38 +1849,38 @@ for(i in 1:8){
   CRC_grt_overlap_imputed[i,25] <- CRC_grt_overlap_imputed[i,14] / length(VYZ)
   CRC_grt_overlap_imputed[i,26] <- CRC_grt_overlap_imputed[i,15] / length(all_union)
 }
-rownames(CRC_grt_overlap_imputed) <- c("Wilcox", "t_test", "ANCOM", "ZINB", "NB", "Metaseq", "DEseq2","Omnibus")
+rownames(CRC_grt_overlap_imputed) <- c("Wilcox", "ANCOM-BC2", "LOCOM", "LinDA", "Metaseq", "DEseq2")
 colnames(CRC_grt_overlap_imputed) <- c("Feng", "Vogtmann", "Yu", "Zeller", "FV", "FY", "FZ", "VY", "VZ", "YZ", "FVY", "FVZ", "FYZ", "VYZ", "FVYZ", "FV_rate", "FY_rate", "FZ_rate", "VY_rate", "VZ_rate", "YZ_rate", "FVY_rate", "FVZ_rate", "FYZ_rate", "VYZ_rate", "FVYZ_rate")
 
 
 
 
 
-CRC_leq_overlap_raw <- matrix(nrow = 8, ncol = 26)
-for(i in 1:8){
-  CRC_leq_overlap_raw[i,1] <- length(Feng_raw_result[[i]]$T2D_leq_cond)
-  CRC_leq_overlap_raw[i,2] <- length(Vogtmann_raw_result[[i]]$T2D_leq_cond)
-  CRC_leq_overlap_raw[i,3] <- length(Yu_raw_result[[i]]$T2D_leq_cond)
-  CRC_leq_overlap_raw[i,4] <- length(Zeller_raw_result[[i]]$T2D_leq_cond)
+CRC_leq_overlap_raw <- matrix(nrow = 6, ncol = 26)
+for(i in 1:6){
+  CRC_leq_overlap_raw[i,1] <- length(Feng_raw_result1[[i]]$T2D_leq_cond)
+  CRC_leq_overlap_raw[i,2] <- length(Vogtmann_raw_result1[[i]]$T2D_leq_cond)
+  CRC_leq_overlap_raw[i,3] <- length(Yu_raw_result1[[i]]$T2D_leq_cond)
+  CRC_leq_overlap_raw[i,4] <- length(Zeller_raw_result1[[i]]$T2D_leq_cond)
   
-  all_intersect <- intersect(intersect(intersect(Vogtmann_raw_result[[i]]$T2D_leq_cond, Yu_raw_result[[i]]$T2D_leq_cond),
-                                       Zeller_raw_result[[i]]$T2D_leq_cond),Feng_raw_result[[i]]$T2D_leq_cond)
-  all_union <- union(union(union(Feng_raw_result[[i]]$T2D_leq_cond, Vogtmann_raw_result[[i]]$T2D_leq_cond), 
-                           Yu_raw_result[[i]]$T2D_leq_cond),  Zeller_raw_result[[i]]$T2D_leq_cond)
-  FV <- intersect(Feng_raw_result[[i]]$T2D_leq_cond, Vogtmann_raw_result[[i]]$T2D_leq_cond)
-  FY <- intersect(Feng_raw_result[[i]]$T2D_leq_cond, Yu_raw_result[[i]]$T2D_leq_cond)
-  FZ <- intersect(Feng_raw_result[[i]]$T2D_leq_cond, Zeller_raw_result[[i]]$T2D_leq_cond)
-  VY <- intersect(Vogtmann_raw_result[[i]]$T2D_leq_cond, Yu_raw_result[[i]]$T2D_leq_cond)
-  VZ <- intersect(Vogtmann_raw_result[[i]]$T2D_leq_cond, Zeller_raw_result[[i]]$T2D_leq_cond)
-  YZ <- intersect(Yu_raw_result[[i]]$T2D_leq_cond, Zeller_raw_result[[i]]$T2D_leq_cond)
-  FVY <- intersect(intersect(Feng_raw_result[[i]]$T2D_leq_cond, Vogtmann_raw_result[[i]]$T2D_leq_cond),
-                   Yu_raw_result[[i]]$T2D_leq_cond)
-  FVZ <- intersect(intersect(Feng_raw_result[[i]]$T2D_leq_cond, Vogtmann_raw_result[[i]]$T2D_leq_cond),
-                   Zeller_raw_result[[i]]$T2D_leq_cond)
-  FYZ <- intersect(intersect(Feng_raw_result[[i]]$T2D_leq_cond, Yu_raw_result[[i]]$T2D_leq_cond),
-                   Zeller_raw_result[[i]]$T2D_leq_cond)
-  VYZ <- intersect(intersect(Vogtmann_raw_result[[i]]$T2D_leq_cond, Yu_raw_result[[i]]$T2D_leq_cond),
-                   Zeller_raw_result[[i]]$T2D_leq_cond)
+  all_intersect <- intersect(intersect(intersect(Vogtmann_raw_result1[[i]]$T2D_leq_cond, Yu_raw_result1[[i]]$T2D_leq_cond),
+                                       Zeller_raw_result1[[i]]$T2D_leq_cond),Feng_raw_result1[[i]]$T2D_leq_cond)
+  all_union <- union(union(union(Feng_raw_result1[[i]]$T2D_leq_cond, Vogtmann_raw_result1[[i]]$T2D_leq_cond), 
+                           Yu_raw_result1[[i]]$T2D_leq_cond),  Zeller_raw_result1[[i]]$T2D_leq_cond)
+  FV <- intersect(Feng_raw_result1[[i]]$T2D_leq_cond, Vogtmann_raw_result1[[i]]$T2D_leq_cond)
+  FY <- intersect(Feng_raw_result1[[i]]$T2D_leq_cond, Yu_raw_result1[[i]]$T2D_leq_cond)
+  FZ <- intersect(Feng_raw_result1[[i]]$T2D_leq_cond, Zeller_raw_result1[[i]]$T2D_leq_cond)
+  VY <- intersect(Vogtmann_raw_result1[[i]]$T2D_leq_cond, Yu_raw_result1[[i]]$T2D_leq_cond)
+  VZ <- intersect(Vogtmann_raw_result1[[i]]$T2D_leq_cond, Zeller_raw_result1[[i]]$T2D_leq_cond)
+  YZ <- intersect(Yu_raw_result1[[i]]$T2D_leq_cond, Zeller_raw_result1[[i]]$T2D_leq_cond)
+  FVY <- intersect(intersect(Feng_raw_result1[[i]]$T2D_leq_cond, Vogtmann_raw_result1[[i]]$T2D_leq_cond),
+                   Yu_raw_result1[[i]]$T2D_leq_cond)
+  FVZ <- intersect(intersect(Feng_raw_result1[[i]]$T2D_leq_cond, Vogtmann_raw_result1[[i]]$T2D_leq_cond),
+                   Zeller_raw_result1[[i]]$T2D_leq_cond)
+  FYZ <- intersect(intersect(Feng_raw_result1[[i]]$T2D_leq_cond, Yu_raw_result1[[i]]$T2D_leq_cond),
+                   Zeller_raw_result1[[i]]$T2D_leq_cond)
+  VYZ <- intersect(intersect(Vogtmann_raw_result1[[i]]$T2D_leq_cond, Yu_raw_result1[[i]]$T2D_leq_cond),
+                   Zeller_raw_result1[[i]]$T2D_leq_cond)
   
   CRC_leq_overlap_raw[i,15] <- length(all_intersect)
   CRC_leq_overlap_raw[i,11] <- length(FVY[!(FVY %in% all_intersect)])
@@ -2425,20 +1895,20 @@ for(i in 1:8){
   CRC_leq_overlap_raw[i,9] <- length(VZ[!(VZ %in% union(FVZ, VYZ))])
   CRC_leq_overlap_raw[i,10] <- length(YZ[!(YZ %in% union(FYZ, VYZ))])
   
-  FV <- union(Feng_raw_result[[i]]$T2D_leq_cond, Vogtmann_raw_result[[i]]$T2D_leq_cond)
-  FY <- union(Feng_raw_result[[i]]$T2D_leq_cond, Yu_raw_result[[i]]$T2D_leq_cond)
-  FZ <- union(Feng_raw_result[[i]]$T2D_leq_cond, Zeller_raw_result[[i]]$T2D_leq_cond)
-  VY <- union(Vogtmann_raw_result[[i]]$T2D_leq_cond, Yu_raw_result[[i]]$T2D_leq_cond)
-  VZ <- union(Vogtmann_raw_result[[i]]$T2D_leq_cond, Zeller_raw_result[[i]]$T2D_leq_cond)
-  YZ <- union(Yu_raw_result[[i]]$T2D_leq_cond, Zeller_raw_result[[i]]$T2D_leq_cond)
-  FVY <- union(union(Feng_raw_result[[i]]$T2D_leq_cond, Vogtmann_raw_result[[i]]$T2D_leq_cond),
-               Yu_raw_result[[i]]$T2D_leq_cond)
-  FVZ <- union(union(Feng_raw_result[[i]]$T2D_leq_cond, Vogtmann_raw_result[[i]]$T2D_leq_cond),
-               Zeller_raw_result[[i]]$T2D_leq_cond)
-  FYZ <- union(union(Feng_raw_result[[i]]$T2D_leq_cond, Yu_raw_result[[i]]$T2D_leq_cond),
-               Zeller_raw_result[[i]]$T2D_leq_cond)
-  VYZ <- union(union(Vogtmann_raw_result[[i]]$T2D_leq_cond, Yu_raw_result[[i]]$T2D_leq_cond),
-               Zeller_raw_result[[i]]$T2D_leq_cond)
+  FV <- union(Feng_raw_result1[[i]]$T2D_leq_cond, Vogtmann_raw_result1[[i]]$T2D_leq_cond)
+  FY <- union(Feng_raw_result1[[i]]$T2D_leq_cond, Yu_raw_result1[[i]]$T2D_leq_cond)
+  FZ <- union(Feng_raw_result1[[i]]$T2D_leq_cond, Zeller_raw_result1[[i]]$T2D_leq_cond)
+  VY <- union(Vogtmann_raw_result1[[i]]$T2D_leq_cond, Yu_raw_result1[[i]]$T2D_leq_cond)
+  VZ <- union(Vogtmann_raw_result1[[i]]$T2D_leq_cond, Zeller_raw_result1[[i]]$T2D_leq_cond)
+  YZ <- union(Yu_raw_result1[[i]]$T2D_leq_cond, Zeller_raw_result1[[i]]$T2D_leq_cond)
+  FVY <- union(union(Feng_raw_result1[[i]]$T2D_leq_cond, Vogtmann_raw_result1[[i]]$T2D_leq_cond),
+               Yu_raw_result1[[i]]$T2D_leq_cond)
+  FVZ <- union(union(Feng_raw_result1[[i]]$T2D_leq_cond, Vogtmann_raw_result1[[i]]$T2D_leq_cond),
+               Zeller_raw_result1[[i]]$T2D_leq_cond)
+  FYZ <- union(union(Feng_raw_result1[[i]]$T2D_leq_cond, Yu_raw_result1[[i]]$T2D_leq_cond),
+               Zeller_raw_result1[[i]]$T2D_leq_cond)
+  VYZ <- union(union(Vogtmann_raw_result1[[i]]$T2D_leq_cond, Yu_raw_result1[[i]]$T2D_leq_cond),
+               Zeller_raw_result1[[i]]$T2D_leq_cond)
   
   CRC_leq_overlap_raw[i,16] <- CRC_leq_overlap_raw[i,5] / length(FV)
   CRC_leq_overlap_raw[i,17] <- CRC_leq_overlap_raw[i,6] / length(FY)
@@ -2453,34 +1923,34 @@ for(i in 1:8){
   CRC_leq_overlap_raw[i,25] <- CRC_leq_overlap_raw[i,14] / length(VYZ)
   CRC_leq_overlap_raw[i,26] <- CRC_leq_overlap_raw[i,15] / length(all_union)
 }
-rownames(CRC_leq_overlap_raw) <- c("Wilcox", "t_test", "ANCOM", "ZINB", "NB", "Metaseq", "DEseq2","Omnibus")
+rownames(CRC_leq_overlap_raw) <- c("Wilcox", "ANCOM-BC2", "LOCOM", "LinDA", "Metaseq", "DEseq2")
 colnames(CRC_leq_overlap_raw) <- c("Feng", "Vogtmann", "Yu", "Zeller", "FV", "FY", "FZ", "VY", "VZ", "YZ", "FVY", "FVZ", "FYZ", "VYZ", "FVYZ", "FV_rate", "FY_rate", "FZ_rate", "VY_rate", "VZ_rate", "YZ_rate", "FVY_rate", "FVZ_rate", "FYZ_rate", "VYZ_rate", "FVYZ_rate")
 
-CRC_leq_overlap_imputed <- matrix(nrow = 8, ncol = 26)
-for(i in 1:8){
-  CRC_leq_overlap_imputed[i,1] <- length(Feng_imp_result[[i]]$T2D_leq_cond)
-  CRC_leq_overlap_imputed[i,2] <- length(Vogtmann_imp_result[[i]]$T2D_leq_cond)
-  CRC_leq_overlap_imputed[i,3] <- length(Yu_imp_result[[i]]$T2D_leq_cond)
-  CRC_leq_overlap_imputed[i,4] <- length(Zeller_imp_result[[i]]$T2D_leq_cond)
+CRC_leq_overlap_imputed <- matrix(nrow = 6, ncol = 26)
+for(i in 1:6){
+  CRC_leq_overlap_imputed[i,1] <- length(Feng_imp_result1[[i]]$T2D_leq_cond)
+  CRC_leq_overlap_imputed[i,2] <- length(Vogtmann_imp_result1[[i]]$T2D_leq_cond)
+  CRC_leq_overlap_imputed[i,3] <- length(Yu_imp_result1[[i]]$T2D_leq_cond)
+  CRC_leq_overlap_imputed[i,4] <- length(Zeller_imp_result1[[i]]$T2D_leq_cond)
   
-  all_intersect <- intersect(intersect(intersect(Vogtmann_imp_result[[i]]$T2D_leq_cond, Yu_imp_result[[i]]$T2D_leq_cond),
-                                       Zeller_imp_result[[i]]$T2D_leq_cond),Feng_imp_result[[i]]$T2D_leq_cond)
-  all_union <- union(union(union(Feng_imp_result[[i]]$T2D_leq_cond, Vogtmann_imp_result[[i]]$T2D_leq_cond), 
-                           Yu_imp_result[[i]]$T2D_leq_cond),  Zeller_imp_result[[i]]$T2D_leq_cond)
-  FV <- intersect(Feng_imp_result[[i]]$T2D_leq_cond, Vogtmann_imp_result[[i]]$T2D_leq_cond)
-  FY <- intersect(Feng_imp_result[[i]]$T2D_leq_cond, Yu_imp_result[[i]]$T2D_leq_cond)
-  FZ <- intersect(Feng_imp_result[[i]]$T2D_leq_cond, Zeller_imp_result[[i]]$T2D_leq_cond)
-  VY <- intersect(Vogtmann_imp_result[[i]]$T2D_leq_cond, Yu_imp_result[[i]]$T2D_leq_cond)
-  VZ <- intersect(Vogtmann_imp_result[[i]]$T2D_leq_cond, Zeller_imp_result[[i]]$T2D_leq_cond)
-  YZ <- intersect(Yu_imp_result[[i]]$T2D_leq_cond, Zeller_imp_result[[i]]$T2D_leq_cond)
-  FVY <- intersect(intersect(Feng_imp_result[[i]]$T2D_leq_cond, Vogtmann_imp_result[[i]]$T2D_leq_cond),
-                   Yu_imp_result[[i]]$T2D_leq_cond)
-  FVZ <- intersect(intersect(Feng_imp_result[[i]]$T2D_leq_cond, Vogtmann_imp_result[[i]]$T2D_leq_cond),
-                   Zeller_imp_result[[i]]$T2D_leq_cond)
-  FYZ <- intersect(intersect(Feng_imp_result[[i]]$T2D_leq_cond, Yu_imp_result[[i]]$T2D_leq_cond),
-                   Zeller_imp_result[[i]]$T2D_leq_cond)
-  VYZ <- intersect(intersect(Vogtmann_imp_result[[i]]$T2D_leq_cond, Yu_imp_result[[i]]$T2D_leq_cond),
-                   Zeller_imp_result[[i]]$T2D_leq_cond)
+  all_intersect <- intersect(intersect(intersect(Vogtmann_imp_result1[[i]]$T2D_leq_cond, Yu_imp_result1[[i]]$T2D_leq_cond),
+                                       Zeller_imp_result1[[i]]$T2D_leq_cond),Feng_imp_result1[[i]]$T2D_leq_cond)
+  all_union <- union(union(union(Feng_imp_result1[[i]]$T2D_leq_cond, Vogtmann_imp_result1[[i]]$T2D_leq_cond), 
+                           Yu_imp_result1[[i]]$T2D_leq_cond),  Zeller_imp_result1[[i]]$T2D_leq_cond)
+  FV <- intersect(Feng_imp_result1[[i]]$T2D_leq_cond, Vogtmann_imp_result1[[i]]$T2D_leq_cond)
+  FY <- intersect(Feng_imp_result1[[i]]$T2D_leq_cond, Yu_imp_result1[[i]]$T2D_leq_cond)
+  FZ <- intersect(Feng_imp_result1[[i]]$T2D_leq_cond, Zeller_imp_result1[[i]]$T2D_leq_cond)
+  VY <- intersect(Vogtmann_imp_result1[[i]]$T2D_leq_cond, Yu_imp_result1[[i]]$T2D_leq_cond)
+  VZ <- intersect(Vogtmann_imp_result1[[i]]$T2D_leq_cond, Zeller_imp_result1[[i]]$T2D_leq_cond)
+  YZ <- intersect(Yu_imp_result1[[i]]$T2D_leq_cond, Zeller_imp_result1[[i]]$T2D_leq_cond)
+  FVY <- intersect(intersect(Feng_imp_result1[[i]]$T2D_leq_cond, Vogtmann_imp_result1[[i]]$T2D_leq_cond),
+                   Yu_imp_result1[[i]]$T2D_leq_cond)
+  FVZ <- intersect(intersect(Feng_imp_result1[[i]]$T2D_leq_cond, Vogtmann_imp_result1[[i]]$T2D_leq_cond),
+                   Zeller_imp_result1[[i]]$T2D_leq_cond)
+  FYZ <- intersect(intersect(Feng_imp_result1[[i]]$T2D_leq_cond, Yu_imp_result1[[i]]$T2D_leq_cond),
+                   Zeller_imp_result1[[i]]$T2D_leq_cond)
+  VYZ <- intersect(intersect(Vogtmann_imp_result1[[i]]$T2D_leq_cond, Yu_imp_result1[[i]]$T2D_leq_cond),
+                   Zeller_imp_result1[[i]]$T2D_leq_cond)
   
   CRC_leq_overlap_imputed[i,15] <- length(all_intersect)
   CRC_leq_overlap_imputed[i,11] <- length(FVY[!(FVY %in% all_intersect)])
@@ -2495,20 +1965,20 @@ for(i in 1:8){
   CRC_leq_overlap_imputed[i,9] <- length(VZ[!(VZ %in% union(FVZ, VYZ))])
   CRC_leq_overlap_imputed[i,10] <- length(YZ[!(YZ %in% union(FYZ, VYZ))])
   
-  FV <- union(Feng_imp_result[[i]]$T2D_leq_cond, Vogtmann_imp_result[[i]]$T2D_leq_cond)
-  FY <- union(Feng_imp_result[[i]]$T2D_leq_cond, Yu_imp_result[[i]]$T2D_leq_cond)
-  FZ <- union(Feng_imp_result[[i]]$T2D_leq_cond, Zeller_imp_result[[i]]$T2D_leq_cond)
-  VY <- union(Vogtmann_imp_result[[i]]$T2D_leq_cond, Yu_imp_result[[i]]$T2D_leq_cond)
-  VZ <- union(Vogtmann_imp_result[[i]]$T2D_leq_cond, Zeller_imp_result[[i]]$T2D_leq_cond)
-  YZ <- union(Yu_imp_result[[i]]$T2D_leq_cond, Zeller_imp_result[[i]]$T2D_leq_cond)
-  FVY <- union(union(Feng_imp_result[[i]]$T2D_leq_cond, Vogtmann_imp_result[[i]]$T2D_leq_cond),
-               Yu_imp_result[[i]]$T2D_leq_cond)
-  FVZ <- union(union(Feng_imp_result[[i]]$T2D_leq_cond, Vogtmann_imp_result[[i]]$T2D_leq_cond),
-               Zeller_imp_result[[i]]$T2D_leq_cond)
-  FYZ <- union(union(Feng_imp_result[[i]]$T2D_leq_cond, Yu_imp_result[[i]]$T2D_leq_cond),
-               Zeller_imp_result[[i]]$T2D_leq_cond)
-  VYZ <- union(union(Vogtmann_imp_result[[i]]$T2D_leq_cond, Yu_imp_result[[i]]$T2D_leq_cond),
-               Zeller_imp_result[[i]]$T2D_leq_cond)
+  FV <- union(Feng_imp_result1[[i]]$T2D_leq_cond, Vogtmann_imp_result1[[i]]$T2D_leq_cond)
+  FY <- union(Feng_imp_result1[[i]]$T2D_leq_cond, Yu_imp_result1[[i]]$T2D_leq_cond)
+  FZ <- union(Feng_imp_result1[[i]]$T2D_leq_cond, Zeller_imp_result1[[i]]$T2D_leq_cond)
+  VY <- union(Vogtmann_imp_result1[[i]]$T2D_leq_cond, Yu_imp_result1[[i]]$T2D_leq_cond)
+  VZ <- union(Vogtmann_imp_result1[[i]]$T2D_leq_cond, Zeller_imp_result1[[i]]$T2D_leq_cond)
+  YZ <- union(Yu_imp_result1[[i]]$T2D_leq_cond, Zeller_imp_result1[[i]]$T2D_leq_cond)
+  FVY <- union(union(Feng_imp_result1[[i]]$T2D_leq_cond, Vogtmann_imp_result1[[i]]$T2D_leq_cond),
+               Yu_imp_result1[[i]]$T2D_leq_cond)
+  FVZ <- union(union(Feng_imp_result1[[i]]$T2D_leq_cond, Vogtmann_imp_result1[[i]]$T2D_leq_cond),
+               Zeller_imp_result1[[i]]$T2D_leq_cond)
+  FYZ <- union(union(Feng_imp_result1[[i]]$T2D_leq_cond, Yu_imp_result1[[i]]$T2D_leq_cond),
+               Zeller_imp_result1[[i]]$T2D_leq_cond)
+  VYZ <- union(union(Vogtmann_imp_result1[[i]]$T2D_leq_cond, Yu_imp_result1[[i]]$T2D_leq_cond),
+               Zeller_imp_result1[[i]]$T2D_leq_cond)
   
   CRC_leq_overlap_imputed[i,16] <- CRC_leq_overlap_imputed[i,5] / length(FV)
   CRC_leq_overlap_imputed[i,17] <- CRC_leq_overlap_imputed[i,6] / length(FY)
@@ -2523,7 +1993,7 @@ for(i in 1:8){
   CRC_leq_overlap_imputed[i,25] <- CRC_leq_overlap_imputed[i,14] / length(VYZ)
   CRC_leq_overlap_imputed[i,26] <- CRC_leq_overlap_imputed[i,15] / length(all_union)
 }
-rownames(CRC_leq_overlap_imputed) <- c("Wilcox", "t_test", "ANCOM", "ZINB", "NB", "Metaseq", "DEseq2","Omnibus")
+rownames(CRC_leq_overlap_imputed) <- c("Wilcox", "ANCOM-BC2", "LOCOM", "LinDA", "Metaseq", "DEseq2")
 colnames(CRC_leq_overlap_imputed) <- c("Feng", "Vogtmann", "Yu", "Zeller", "FV", "FY", "FZ", "VY", "VZ", "YZ", "FVY", "FVZ", "FYZ", "VYZ", "FVYZ", "FV_rate", "FY_rate", "FZ_rate", "VY_rate", "VZ_rate", "YZ_rate", "FVY_rate", "FVZ_rate", "FYZ_rate", "VYZ_rate", "FVYZ_rate")
 
 
@@ -2533,10 +2003,6 @@ Qin_Karlsson_result <- classification(input_data = Qin_raw, condition = Qin_cond
 
 Karlsson_Qin_result <- classification(input_data = Karlsson_raw, condition = Karlsson_condition, features_raw = Qin_raw_result, features_imputed = Qin_imp_result)
 
-Feng_Vogtmann_result <- classification(input_data = Feng_raw, condition = Feng_condition, features_raw = Vogtmann_raw_result, features_imputed = Vogtmann_imp_result)
-
-Vogtmann_Feng_result <- classification(input_data = Vogtmann_raw, condition = Vogtmann_condition, features_raw = Feng_raw_result, features_imputed = Feng_imp_result)
-
 Yu_Zeller_result <- classification(input_data = Yu_raw, condition = Yu_condition, features_raw = Zeller_raw_result, features_imputed = Zeller_imp_result)
 
 Zeller_Yu_result <- classification(input_data = Zeller_raw, condition = Zeller_condition, features_raw = Yu_raw_result, features_imputed = Yu_imp_result)
@@ -2545,43 +2011,40 @@ Zeller_Yu_result <- classification(input_data = Zeller_raw, condition = Zeller_c
 
 
 classification_plot_pr <- function(result){
-  hz_value <-  result$full_data_result[11]
-  df <- rbind(cbind(c(result$raw_result[,11], result$imputed_result[,11]), c(paste0("raw_",  rownames(result$raw_result)), paste0("imp_",  rownames(result$raw_result))), rep( rownames(result$raw_result), 2)))
-  df <- df[-c(5, 12),]
-  df[4,3] <- "ZINB"
-  df[11,3] <- "NB"
+  df <- rbind(cbind(c(result$raw_result[,5], result$imputed_result[,5]), c(paste0("raw_",  rownames(result$raw_result)), paste0("imp_",  rownames(result$raw_result))), rep( rownames(result$raw_result), 2)))
   colnames(df) <- c("values", "type", "test")
   df <- as.data.frame(df)
   df$values <- as.numeric(as.character(df$values))
   df$values[is.na(df$values)] <- 0.5
-  df$type <- factor(as.character(df$type), levels = c(paste0("raw_",  rownames(result$raw_result)[-5]), paste0("imp_",  rownames(result$raw_result)[-4])))
-  new_levels <- rownames(result$raw_result)[-5]
-  new_levels[4] <- "ZINB/NB"
+  df$type <- factor(as.character(df$type), levels = c(paste0("raw_",  rownames(result$raw_result)), paste0("imp_",  rownames(result$raw_result))))
+  new_levels <- rownames(result$raw_result)
   
   df$test <- factor(as.character(df$test), levels = new_levels)
   df$type <- ifelse(grepl("raw_", df$type), "raw_result", "imputed_result")
   df$type <- factor(df$type, levels = c("raw_result", "imputed_result"))
   ggplot(df, aes(fill=type, y=values, x=test)) + 
     geom_bar(position = "dodge", stat="identity") + 
-    scale_x_discrete(labels=c("Wilcox", "t_test", "ANCOM", 
-                              "ZINB/NB", "Metaseq", "DEseq2", "Omnibus")) +
+    scale_x_discrete(labels=c("Wilcox", "ANCOM-BC2", "LOCOM", "LinDA", "Metaseq", "DEseq2")) +
     scale_fill_manual(
-      name="",
+      name="",  
       values=c("raw_result"=alpha("#636363", 0.5), "imputed_result"="#636363"),
       labels=c("raw_result"="raw_result", "imputed_result"="imputed_result")
     ) + 
-    #scale_fill_manual("method", values = c("ZI" = "#7e7e7e", "mbImpute" = "#1D9E78", "softImpute" = "#346FA0", "scImpute" = "#3383C2", "SAVER" = "#53AFDA", "MAGIC" = "#AAD0E6", "ALRA" = "#deebf7")) +
     ylab("PR-AUC") +
     coord_cartesian(ylim=c(0.2, 1)) +
     theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.text.x=element_text(size=12, angle=45, hjust=1),
                        #axis.text.x=element_blank(),
-                       axis.title.y=element_text(size=14),
+                       axis.text.y = element_text(size=18),
+                       axis.title.y=element_text(size=16),
+                       axis.title.x=element_text(size=16),
                        legend.text=element_text(size=12),
                        panel.border = element_blank(),
                        axis.line = element_line(colour = "black"),
                        legend.position="right",
-                       legend.title = element_blank()) +geom_hline(yintercept = hz_value, linetype="dashed", color = "#7e7e7e", size = 2)
+                       legend.title = element_blank()) 
 }
+
+
 
 
 pdf("/Users/hanxinyu/Desktop/real_data_analysis/change/Qin_Karlsson_result_random_forest.pdf")
@@ -2618,23 +2081,6 @@ pdf("/Users/hanxinyu/Desktop/real_data_analysis/change/Karlsson_Qin_result_svm_g
 classification_plot_pr(result = Karlsson_Qin_result)
 dev.off()
 
-
-
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/change/Feng_Vogtmann_result_xgboost.pdf")
-classification_plot_pr(result = Feng_Vogtmann_result)
-dev.off()
-
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/change/Vogtmann_Feng_result_xgboost.pdf")
-classification_plot_pr(result = Vogtmann_Feng_result)
-dev.off()
-
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/change/Feng_Vogtmann_result_random_forest.pdf")
-classification_plot_pr(result = Feng_Vogtmann_result)
-dev.off()
-
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/change/Vogtmann_Feng_result_random_forest.pdf")
-classification_plot_pr(result = Vogtmann_Feng_result)
-dev.off()
 
 pdf("/Users/hanxinyu/Desktop/real_data_analysis/change/Yu_Zeller_result_random_forest.pdf")
 classification_plot_pr(result = Yu_Zeller_result)
@@ -3592,7 +3038,7 @@ plot(y = Karlsson_control_ori[,"s__Ruminococcus_torques"], x = Karlsson_control_
 nz_idx <- intersect(which(Karlsson_control_ori[,"s__Ruminococcus_torques"] > log10(1.02)), which(Karlsson_control_ori[,"s__Eubacterium_eligens"] > log10(1.02)))
 abline(coef = lm(Karlsson_control_ori[,"s__Ruminococcus_torques"] ~ Karlsson_control_ori[,"s__Eubacterium_eligens"])$coefficients, col = "black", lwd = 4)
 abline(coef = lm(Karlsson_control_ori[nz_idx,"s__Ruminococcus_torques"] ~ Karlsson_control_ori[nz_idx,"s__Eubacterium_eligens"])$coefficients, col = alpha("blue", 0.5), lwd = 4)
-legend(x='bottomleft', 
+legend(x='bottomright', 
        legend= c(paste("Cor = ", round(cor(Karlsson_control_ori[,"s__Ruminococcus_torques"], 
                                            Karlsson_control_ori[,"s__Eubacterium_eligens"]), digits = 2), sep = ""),
                  paste("nz_Cor = ", round(cor(Karlsson_control_ori[nz_idx,"s__Ruminococcus_torques"], 
@@ -3604,14 +3050,14 @@ legend(x='bottomleft',
 dev.off()
 
 
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/Karlsson/Karlsson_CON_R.torques_E.eligens_imp1.pdf", width = 7, height = 7)
+pdf("/Users/hanxinyu/Desktop/real_data_analysis/Karlsson/Karlsson_CON_R.torques_E.eligens_imp.pdf", width = 7, height = 7)
 
 plot(y = Karlsson_control_imputed[,"s__Ruminococcus_torques"], x = Karlsson_control_imputed[,"s__Eubacterium_eligens"], 
      xlab = "Eubacterium_eligens", ylab = "Ruminococcus_troques", main = "TphPMF + Karlsson control data", 
      xlim = c(0, 6), ylim=c(0,5))
 nz_idx <- intersect(which(Karlsson_control_imputed[,"s__Ruminococcus_torques"] > log10(1.02)), which(Karlsson_control_imputed[,"s__Eubacterium_eligens"] > log10(1.02)))
 abline(coef = lm(Karlsson_control_imputed[,"s__Ruminococcus_torques"] ~ Karlsson_control_imputed[,"s__Eubacterium_eligens"])$coefficients, col = alpha("blue", 0.5), lwd = 4)
-legend(x='bottomleft', legend= paste("Cor = ", round(cor(Karlsson_control_imputed[,"s__Ruminococcus_torques"], Karlsson_control_imputed[,"s__Eubacterium_eligens"]), digits = 2), sep = ""), lty = 1, cex = 0.8, col = alpha("blue", 0.5))
+legend(x='bottomright', legend= paste("Cor = ", round(cor(Karlsson_control_imputed[,"s__Ruminococcus_torques"], Karlsson_control_imputed[,"s__Eubacterium_eligens"]), digits = 2), sep = ""), lty = 1, cex = 0.8, col = alpha("blue", 0.5))
 dev.off()
 
 
@@ -3629,17 +3075,17 @@ plot(y = Karlsson_T2D_ori[,"s__Ruminococcus_torques"], x = Karlsson_T2D_ori[,"s_
 nz_idx <- intersect(which(Karlsson_T2D_ori[,"s__Ruminococcus_torques"] > log10(1.02)), which(Karlsson_T2D_ori[,"s__Eubacterium_eligens"] > log10(1.02)))
 abline(coef = lm(Karlsson_T2D_ori[,"s__Ruminococcus_torques"] ~ Karlsson_T2D_ori[,"s__Eubacterium_eligens"])$coefficients, col = "black", lwd = 4)
 abline(coef = lm(Karlsson_T2D_ori[nz_idx,"s__Ruminococcus_torques"] ~ Karlsson_T2D_ori[nz_idx,"s__Eubacterium_eligens"])$coefficients, col = alpha("blue", 0.5), lwd = 4)
-legend(x='bottomleft', legend= c( paste("Cor = ", round(cor(Karlsson_T2D_ori[,"s__Ruminococcus_torques"], Karlsson_T2D_ori[,"s__Eubacterium_eligens"]), digits = 2), sep = ""),                                  paste("nz_Cor = ", round(cor(Karlsson_T2D_ori[nz_idx,"s__Ruminococcus_torques"], Karlsson_T2D_ori[nz_idx,"s__Eubacterium_eligens"]), digits = 2), sep = "")), lty = c(1,1), cex = 0.8, col=c("black", "blue"))
+legend(x='bottomright', legend= c( paste("Cor = ", round(cor(Karlsson_T2D_ori[,"s__Ruminococcus_torques"], Karlsson_T2D_ori[,"s__Eubacterium_eligens"]), digits = 2), sep = ""),                                  paste("nz_Cor = ", round(cor(Karlsson_T2D_ori[nz_idx,"s__Ruminococcus_torques"], Karlsson_T2D_ori[nz_idx,"s__Eubacterium_eligens"]), digits = 2), sep = "")), lty = c(1,1), cex = 0.8, col=c("black", "blue"))
 dev.off()
 
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/Karlsson/Karlsson_T2D_R.torques_E.eligens_imp1.pdf", width = 7, height =7)
+pdf("/Users/hanxinyu/Desktop/real_data_analysis/Karlsson/Karlsson_T2D_R.torques_E.eligens_imp.pdf", width = 7, height =7)
 
 plot(y = Karlsson_T2D_imputed[,"s__Ruminococcus_torques"], x = Karlsson_T2D_imputed[,"s__Eubacterium_eligens"], 
      xlab = "Eubacterium_eligens", ylab = "Ruminococcus_troques", main = "TphPMF + Karlsson T2D data", 
      xlim = c(0, 6), ylim=c(0,5))
 nz_idx <- intersect(which(Karlsson_T2D_imputed[,"s__Ruminococcus_torques"] > log10(1.02)), which(Karlsson_T2D_imputed[,"s__Eubacterium_eligens"] > log10(1.02)))
 abline(coef = lm(Karlsson_T2D_imputed[,"s__Ruminococcus_torques"] ~ Karlsson_T2D_imputed[,"s__Eubacterium_eligens"])$coefficients, col = alpha("blue", 0.5), lwd = 4)
-legend(x='bottomleft', legend= paste("Cor = ", round(cor(Karlsson_T2D_imputed[,"s__Ruminococcus_torques"], Karlsson_T2D_imputed[,"s__Eubacterium_eligens"]), digits = 2), sep = ""), lty = 1, cex = 0.8, col = alpha("blue", 0.5))
+legend(x='bottomright', legend= paste("Cor = ", round(cor(Karlsson_T2D_imputed[,"s__Ruminococcus_torques"], Karlsson_T2D_imputed[,"s__Eubacterium_eligens"]), digits = 2), sep = ""), lty = 1, cex = 0.8, col = alpha("blue", 0.5))
 
 dev.off()
 
@@ -3662,7 +3108,7 @@ legend(x='bottomright', legend= c( paste("Cor = ", round(cor(Qin_control_ori[,"s
 dev.off()
 
 
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/Qin/Qin_CON_B.obeum_A.putredinis_imp1.pdf", width = 7, height =7)
+pdf("/Users/hanxinyu/Desktop/real_data_analysis/Qin/Qin_CON_B.obeum_A.putredinis_imp.pdf", width = 7, height =7)
 
 plot(y = Qin_control_imputed[,"s__Blautia_obeum"], x = Qin_control_imputed[,"s__Alistipes_putredinis"],
      xlab = "Alistipes_putredinise", ylab = "Blautia_obeum", main = "TphPMF + Qin control data", 
@@ -3687,7 +3133,7 @@ abline(coef = lm(Qin_T2D_ori[nz_idx,"s__Blautia_obeum"] ~ Qin_T2D_ori[nz_idx,"s_
 legend(x='bottomright', legend= c( paste("Cor = ", round(cor(Qin_T2D_ori[,"s__Blautia_obeum"], Qin_T2D_ori[,"s__Alistipes_putredinis"]), digits = 2), sep = ""),                                  paste("nz_Cor = ", round(cor(Qin_T2D_ori[nz_idx,"s__Blautia_obeum"], Qin_T2D_ori[nz_idx,"s__Alistipes_putredinis"]), digits = 2), sep = "")), lty = c(1,1), cex = 0.8, col=c("black", "blue"))
 dev.off()
 
-pdf("/Users/hanxinyu/Desktop/real_data_analysis/Qin/Qin_T2D_B.obeum_A.putredinis_imp1.pdf", width = 7, height =7)
+pdf("/Users/hanxinyu/Desktop/real_data_analysis/Qin/Qin_T2D_B.obeum_A.putredinis_imp.pdf", width = 7, height =7)
 
 plot(y = Qin_T2D_imputed[,"s__Blautia_obeum"], x = Qin_T2D_imputed[,"s__Alistipes_putredinis"], 
      xlab = "Alistipes_putredinise", ylab = "Blautia_obeum", main = "TphPMF + Qin T2D data", 
